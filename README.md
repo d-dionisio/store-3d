@@ -57,6 +57,8 @@ go run ./cmd/api
 
 A API valida a configuração, inicializa um pool `pgxpool`, confirma a conexão com `Ping` e fecha o pool durante o encerramento do processo. Credenciais e a URL de conexão não são registradas em logs.
 
+Para uploads de orçamento, configure `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID` e `R2_SECRET_ACCESS_KEY` somente no ambiente da API. O bucket privado deve permitir CORS `PUT` de `http://localhost:3000` com os headers `Content-Type` e `x-amz-meta-sha256`. Sem essas variáveis, a API inicia, mas o upload fica indisponível.
+
 ### Migrations
 
 Com o PostgreSQL ativo, execute a partir de `backend`:

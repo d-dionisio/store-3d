@@ -2,7 +2,7 @@
 
 Este documento registra as decisões técnicas vigentes da Loja 3D. Ele deve ser atualizado sempre que uma etapa alterar a arquitetura, os limites do sistema ou uma decisão descrita abaixo.
 
-Última atualização: 8 de novembro de 2026 — Etapa 6.1.
+Última atualização: 9 de novembro de 2026 — Etapa 7.1.
 
 ## Visão geral
 
@@ -228,6 +228,16 @@ Arquivos personalizados:
 - Aceitam somente STL e 3MF.
 - Precisam ser aprovados pela verificação de segurança antes da análise técnica.
 - Devem ser acessados por URLs assinadas e temporárias.
+
+### Upload público de orçamento
+
+- O navegador envia STL/3MF diretamente ao bucket privado Cloudflare R2 por URL SigV4 válida por 15 minutos.
+- `quote_uploads` representa autorizações transitórias; tokens de posse e consulta são persistidos somente como SHA-256.
+- A autorização fixa chave aleatória, tamanho, tipo e checksum antes do PUT; a confirmação consulta o objeto e valida a assinatura inicial do conteúdo.
+- 3MF exige assinatura ZIP, mas permanece `pending`: proteção completa contra decompression bomb depende do scanner assíncrono ainda não implementado.
+- A criação de `quotes`, `quote_files` e o consumo do upload ocorre na mesma transação.
+- Arquivos definitivos entram como `security_status = pending`, nunca como `clean`.
+- Uploads abandonados dependem de job de limpeza futuro e lifecycle rule no bucket.
 
 ## Integridade e status
 

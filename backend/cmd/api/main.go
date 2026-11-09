@@ -11,9 +11,11 @@ import (
 	"time"
 
 	catalogapp "example.com/loja-3d/backend/internal/application/catalog"
+	quoteapp "example.com/loja-3d/backend/internal/application/quote"
 	apihttp "example.com/loja-3d/backend/internal/http"
 	"example.com/loja-3d/backend/internal/http/handlers"
 	"example.com/loja-3d/backend/internal/infrastructure/postgres"
+	"example.com/loja-3d/backend/internal/infrastructure/storage"
 )
 
 func main() {
@@ -39,10 +41,21 @@ func main() {
 		catalogapp.NewGetProductBySlug(catalogRepository),
 		catalogapp.NewListCategories(catalogRepository),
 	)
+	quoteRepository := postgres.NewQuoteRepository(pool)
+	r2, storageErr := storage.NewR2FromEnv()
+	var quoteStorage quoteapp.Storage = storage.Unavailable{}
+	bucket := envOrDefault("R2_BUCKET", "unconfigured")
+	if storageErr == nil {
+		quoteStorage = r2
+		bucket = r2.Bucket()
+	} else {
+		slog.Warn("object storage is not configured; uploads are unavailable")
+	}
+	quoteHandler := handlers.NewQuoteHandler(quoteapp.New(quoteRepository, quoteStorage, bucket))
 
 	server := &http.Server{
 		Addr:              ":" + port,
-		Handler:           apihttp.NewHandler(frontendOrigin, databaseHealth, catalogHandler),
+		Handler:           apihttp.NewHandler(frontendOrigin, databaseHealth, catalogHandler, quoteHandler),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,

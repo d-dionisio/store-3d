@@ -8,8 +8,8 @@ type CartContextValue = {
   count: number;
   ready: boolean;
   addItem: (item: CartItem) => void;
-  updateQuantity: (productId: string, color: string, quantity: number) => void;
-  removeItem: (productId: string, color: string) => void;
+  updateQuantity: (variantId: string, quantity: number) => void;
+  removeItem: (variantId: string) => void;
 };
 
 const CartContext = createContext<CartContextValue | null>(null);
@@ -23,7 +23,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     let storedItems: CartItem[] = [];
     try {
       const stored = window.localStorage.getItem(storageKey);
-      if (stored) storedItems = JSON.parse(stored) as CartItem[];
+      if (stored) { const parsed: unknown = JSON.parse(stored); if (Array.isArray(parsed)) storedItems = parsed.filter((item): item is CartItem => typeof item === "object" && item !== null && "productVariantId" in item && "productSlug" in item); }
     } catch { /* Invalid demo storage is ignored. */ }
     const timer = window.setTimeout(() => {
       setItems(storedItems);
@@ -38,19 +38,19 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
 
   const addItem = useCallback((item: CartItem) => {
     setItems((current) => {
-      const match = current.find((entry) => entry.productId === item.productId && entry.color === item.color);
+      const match = current.find((entry) => entry.productVariantId === item.productVariantId);
       return match
         ? current.map((entry) => entry === match ? { ...entry, quantity: entry.quantity + item.quantity } : entry)
         : [...current, item];
     });
   }, []);
 
-  const updateQuantity = useCallback((productId: string, color: string, quantity: number) => {
-    setItems((current) => current.map((item) => item.productId === productId && item.color === color ? { ...item, quantity: Math.max(1, quantity) } : item));
+  const updateQuantity = useCallback((variantId: string, quantity: number) => {
+    setItems((current) => current.map((item) => item.productVariantId === variantId ? { ...item, quantity: Math.max(1, quantity) } : item));
   }, []);
 
-  const removeItem = useCallback((productId: string, color: string) => {
-    setItems((current) => current.filter((item) => item.productId !== productId || item.color !== color));
+  const removeItem = useCallback((variantId: string) => {
+    setItems((current) => current.filter((item) => item.productVariantId !== variantId));
   }, []);
 
   const value = useMemo(() => ({ items, ready, addItem, updateQuantity, removeItem, count: items.reduce((sum, item) => sum + item.quantity, 0) }), [items, ready, addItem, updateQuantity, removeItem]);

@@ -1,4 +1,4 @@
-import { env } from "@/lib/env";
+import { getApiUrl } from "@/lib/env";
 
 export type HealthResponse = {
   status: "ok";
@@ -6,7 +6,7 @@ export type HealthResponse = {
 };
 
 export async function getApiHealth(signal?: AbortSignal): Promise<HealthResponse> {
-  const response = await fetch(`${env.apiUrl}/api/v1/health`, {
+  const response = await fetch(`${getApiUrl()}/api/v1/health`, {
     method: "GET",
     headers: { Accept: "application/json" },
     signal,

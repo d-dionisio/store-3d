@@ -1,0 +1,3 @@
+DROP TABLE IF EXISTS quote_files;
+DROP TABLE IF EXISTS quotes;
+

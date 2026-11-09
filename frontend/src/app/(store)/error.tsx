@@ -1,0 +1,2 @@
+"use client";
+export default function StoreError({ error, reset }: { error: Error; reset: () => void }) { const invalid = error.message.includes("inválid"); return <main className="page container error-page"><div className="empty-state"><h1>{invalid ? "Filtros inválidos." : "Não foi possível carregar a loja."}</h1><p>{invalid ? "Revise os valores informados ou limpe os filtros." : "A API pode estar temporariamente indisponível."}</p><button className="button button-primary" onClick={reset}>Tentar novamente</button></div></main>; }

@@ -10,16 +10,39 @@ import (
 	"syscall"
 	"time"
 
+	catalogapp "example.com/loja-3d/backend/internal/application/catalog"
 	apihttp "example.com/loja-3d/backend/internal/http"
+	"example.com/loja-3d/backend/internal/http/handlers"
+	"example.com/loja-3d/backend/internal/infrastructure/postgres"
 )
 
 func main() {
 	port := envOrDefault("HTTP_PORT", "8080")
 	frontendOrigin := envOrDefault("FRONTEND_ORIGIN", "http://localhost:3000")
+	databaseConfig, err := postgres.LoadConfig()
+	if err != nil {
+		slog.Error("invalid database configuration", "error", err)
+		os.Exit(1)
+	}
+
+	pool, err := postgres.NewPool(context.Background(), databaseConfig)
+	if err != nil {
+		// Connection errors can contain endpoint metadata. Keep startup logs free of DSN details.
+		slog.Error("database initialization failed")
+		os.Exit(1)
+	}
+	defer pool.Close()
+	databaseHealth := postgres.NewHealth(pool, databaseConfig.ConnectTimeout)
+	catalogRepository := postgres.NewCatalogRepository(pool)
+	catalogHandler := handlers.NewCatalogHandler(
+		catalogapp.NewListProducts(catalogRepository),
+		catalogapp.NewGetProductBySlug(catalogRepository),
+		catalogapp.NewListCategories(catalogRepository),
+	)
 
 	server := &http.Server{
 		Addr:              ":" + port,
-		Handler:           apihttp.NewHandler(frontendOrigin),
+		Handler:           apihttp.NewHandler(frontendOrigin, databaseHealth, catalogHandler),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,

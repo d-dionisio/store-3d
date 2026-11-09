@@ -1,4 +1,4 @@
-import type { Product, ProductCategory } from "@/types/product";
+import type { MockProduct, ProductCategory } from "@/types/product";
 
 export const categories: { name: ProductCategory; description: string }[] = [
   { name: "Decoração", description: "Formas autorais para espaços com personalidade." },
@@ -8,7 +8,7 @@ export const categories: { name: ProductCategory; description: string }[] = [
   { name: "Personalizados", description: "Ideias únicas, modeladas para você." },
 ];
 
-export const products: Product[] = [
+export const products: MockProduct[] = [
   {
     id: "p1", slug: "vaso-orbita", name: "Vaso Órbita", description: "Um vaso escultural de curvas contínuas, criado para composições contemporâneas.", price: 189, category: "Decoração", colors: ["Marfim", "Areia", "Grafite"], dimensions: "18 × 18 × 24 cm", material: "PLA premium de origem renovável", leadTime: "5 a 8 dias úteis", imagePosition: "top-left", featured: true,
   },

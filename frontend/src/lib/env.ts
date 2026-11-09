@@ -1,10 +1,6 @@
-const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-
-if (!apiUrl) {
-  throw new Error("NEXT_PUBLIC_API_URL is not configured");
+export function getApiUrl() {
+  const value = typeof window === "undefined" ? process.env.API_URL ?? process.env.NEXT_PUBLIC_API_URL : process.env.NEXT_PUBLIC_API_URL;
+  if (!value) throw new Error("API_URL ou NEXT_PUBLIC_API_URL não está configurada");
+  return value.replace(/\/$/, "");
 }
-
-export const env = {
-  apiUrl: apiUrl.replace(/\/$/, ""),
-};
 

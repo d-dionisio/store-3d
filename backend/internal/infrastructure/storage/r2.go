@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
@@ -74,7 +75,11 @@ func (r *R2) presign(method, key string, ttl time.Duration, extra map[string]str
 }
 func (r *R2) PresignPut(ctx context.Context, key, checksum string, size int64, ttl time.Duration) (string, map[string]string, error) {
 	_ = ctx
-	headers := map[string]string{"x-amz-meta-sha256": checksum}
+	raw, err := hex.DecodeString(checksum)
+	if err != nil {
+		return "", nil, errors.New("invalid sha256 checksum")
+	}
+	headers := map[string]string{"x-amz-meta-sha256": checksum, "x-amz-checksum-sha256": base64.StdEncoding.EncodeToString(raw)}
 	u, err := r.presign(http.MethodPut, key, ttl, headers)
 	return u, headers, err
 }
@@ -95,7 +100,12 @@ func (r *R2) Verify(ctx context.Context, key string, size int64, checksum, conte
 	if resp.StatusCode != http.StatusOK {
 		return errors.New("storage object unavailable")
 	}
-	if resp.ContentLength != size || resp.Header.Get("x-amz-meta-sha256") != checksum || resp.Header.Get("Content-Type") != contentType {
+	rawChecksum, err := hex.DecodeString(checksum)
+	if err != nil {
+		return errors.New("invalid expected checksum")
+	}
+	expectedStorageChecksum := base64.StdEncoding.EncodeToString(rawChecksum)
+	if resp.ContentLength != size || resp.Header.Get("x-amz-meta-sha256") != checksum || resp.Header.Get("x-amz-checksum-sha256") != expectedStorageChecksum || resp.Header.Get("Content-Type") != contentType {
 		return errors.New("storage metadata mismatch")
 	}
 	getURL, err := r.presign(http.MethodGet, key, time.Minute, nil)

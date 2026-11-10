@@ -1,0 +1,1 @@
+"use client";export default function AdminError({reset}:{reset:()=>void}){return <main className="admin-login-page"><div className="admin-login-card"><h1>Não foi possível carregar o painel.</h1><p>A sessão pode ter expirado ou a API está indisponível.</p><button onClick={reset}>Tentar novamente</button></div></main>}

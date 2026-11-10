@@ -2,7 +2,7 @@
 
 Este documento registra as decisões técnicas vigentes da Loja 3D. Ele deve ser atualizado sempre que uma etapa alterar a arquitetura, os limites do sistema ou uma decisão descrita abaixo.
 
-Última atualização: 9 de novembro de 2026 — Etapa 7.1.
+Última atualização: 9 de novembro de 2026 — Etapa 7.2.
 
 ## Visão geral
 
@@ -110,6 +110,18 @@ Endpoints atuais:
 - `GET /api/v1/products`
 - `GET /api/v1/products/{slug}`
 - `GET /api/v1/categories`
+
+## Administração
+
+- O painel `/admin` usa identidade Dark Tech e é separado do layout público.
+- Administradores pertencem a `admin_users`, sem reutilizar tokens de upload ou confiar em flags do frontend.
+- Senhas usam bcrypt; criação/rotação ocorre somente pelo comando `cmd/admin` com variáveis de processo.
+- Sessões usam token aleatório de 256 bits, armazenado apenas como SHA-256, expiram em 8 horas e podem ser revogadas.
+- O cookie é HTTP-only, SameSite Strict e Secure quando `APP_ENV=production`.
+- Operações mutáveis exigem token CSRF vinculado à sessão; login possui rate limiting e bloqueio temporário após falhas.
+- `quote_viewer` e `admin` podem consultar orçamentos; não existem operações de aprovação ou preço nesta etapa.
+- Login, logout, dashboard, listagem e detalhe geram eventos em `admin_audit_events`.
+- Arquivos administrativos expõem apenas metadata; não há endpoint de download, chave de objeto ou URL assinada.
 
 ## Migrations
 
@@ -233,7 +245,7 @@ Arquivos personalizados:
 
 - O navegador envia STL/3MF diretamente ao bucket privado Cloudflare R2 por URL SigV4 válida por 15 minutos.
 - `quote_uploads` representa autorizações transitórias; tokens de posse e consulta são persistidos somente como SHA-256.
-- A autorização fixa chave aleatória, tamanho, tipo e checksum antes do PUT; a confirmação consulta o objeto e valida a assinatura inicial do conteúdo.
+- A autorização fixa chave aleatória, tamanho, tipo e checksum antes do PUT; o header padrão `x-amz-checksum-sha256` obriga o storage a validar o payload e a confirmação compara o resultado retornado pelo R2.
 - 3MF exige assinatura ZIP, mas permanece `pending`: proteção completa contra decompression bomb depende do scanner assíncrono ainda não implementado.
 - A criação de `quotes`, `quote_files` e o consumo do upload ocorre na mesma transação.
 - Arquivos definitivos entram como `security_status = pending`, nunca como `clean`.
@@ -286,4 +298,15 @@ Ainda não foram implementados:
 - Estratégia de divisão automática em múltiplos pacotes.
 - Emissão fiscal e retenção legal de dados.
 - Suporte futuro a múltiplas categorias ou coleções por produto.
+
+## Propostas administrativas (Etapa 7.3)
+
+- `quotes` mantém o estado agregado do fluxo (`submitted → under_review → quoted → approved/rejected/expired`); `quote_proposals` preserva a composição comercial imutável por versão.
+- Existe no máximo um rascunho por orçamento. O envio fecha o rascunho, copia preço, prazo e validade para o snapshot de `quotes` e impede um segundo envio concorrente pela combinação de lock pessimista e estado.
+- Custos e preço final são `BIGINT` em centavos; margem é armazenada em basis points. O domínio rejeita custos negativos e preço inferior a custos mais margem.
+- Alterações de preço, início da análise, envio e expiração registram auditoria dentro da mesma transação PostgreSQL.
+- Uma proposta somente pode ser enviada quando há arquivo associado e todos os arquivos estão `clean`. Estados `pending`, `scanning`, `rejected` e `failed` permanecem bloqueados.
+- O frete é explicitamente separado por `shipping_included`; o padrão é não incluído.
+- A integração de e-mail ainda não está configurada. O envio comercial é persistido com `notification_status=not_configured`, sem simular entrega. O link seguro ao cliente depende da autenticação/capability prevista para a Etapa 7.4.
+- Mutações administrativas exigem sessão `admin`, cookie HTTP-only e token CSRF. Leitores (`quote_viewer`) não podem iniciar análise nem precificar.
 

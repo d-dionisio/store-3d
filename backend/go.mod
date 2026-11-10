@@ -5,6 +5,7 @@ go 1.25.11
 require (
 	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/jackc/pgx/v5 v5.12.0
+	golang.org/x/crypto v0.53.0
 )
 
 require (

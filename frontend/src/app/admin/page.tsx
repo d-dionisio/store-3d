@@ -1,0 +1,4 @@
+import{AdminShell}from"@/components/admin/admin-shell";import{adminCookie,adminGuard}from"@/lib/admin-auth";import{getAdminStats}from"@/services/admin-api";
+const cards=[['Total','total'],['Aguardando análise','waiting'],['Em análise','reviewing'],['Propostas enviadas','quoted'],['Aprovadas','approved'],['Recusadas','rejected']]as const;
+export const dynamic="force-dynamic";
+export default async function AdminDashboard(){let stats;try{stats=await getAdminStats(await adminCookie())}catch(e){adminGuard(e)}return <AdminShell><header className="admin-header"><span>Visão operacional</span><h1>Dashboard</h1><p>Indicadores reais das solicitações registradas.</p></header><section className="admin-stats">{cards.map(([label,key])=><article key={key}><span>{label}</span><strong>{stats[key]}</strong></article>)}</section></AdminShell>}

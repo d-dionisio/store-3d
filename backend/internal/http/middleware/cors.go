@@ -8,9 +8,10 @@ func CORS(allowedOrigin string) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 			if request.Header.Get("Origin") == allowedOrigin {
 				response.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+				response.Header().Set("Access-Control-Allow-Credentials", "true")
 				response.Header().Set("Vary", "Origin")
 				response.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-				response.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+				response.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-CSRF-Token")
 			}
 
 			if request.Method == http.MethodOptions {

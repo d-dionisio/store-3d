@@ -57,7 +57,20 @@ go run ./cmd/api
 
 A API valida a configuração, inicializa um pool `pgxpool`, confirma a conexão com `Ping` e fecha o pool durante o encerramento do processo. Credenciais e a URL de conexão não são registradas em logs.
 
-Para uploads de orçamento, configure `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID` e `R2_SECRET_ACCESS_KEY` somente no ambiente da API. O bucket privado deve permitir CORS `PUT` de `http://localhost:3000` com os headers `Content-Type` e `x-amz-meta-sha256`. Sem essas variáveis, a API inicia, mas o upload fica indisponível.
+Para uploads de orçamento, configure `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID` e `R2_SECRET_ACCESS_KEY` somente no ambiente da API. O bucket privado deve permitir CORS `PUT` de `http://localhost:3000` com os headers `Content-Type`, `x-amz-meta-sha256` e `x-amz-checksum-sha256`, expondo `ETag` e `x-amz-checksum-sha256`. Sem essas variáveis, a API inicia, mas o upload fica indisponível.
+
+### Administrador local
+
+Depois de aplicar a migration 10, crie ou rotacione uma conta sem colocar a senha em argumentos de linha de comando:
+
+```powershell
+$env:ADMIN_EMAIL = "admin@example.com"
+$env:ADMIN_NAME = "Administrador"
+$env:ADMIN_PASSWORD = Read-Host "Senha administrativa"
+go run ./cmd/admin
+```
+
+Use ao menos 12 caracteres. Inicie a API com `APP_ENV=production` em produção para exigir cookie Secure. O painel fica em `http://localhost:3000/admin/login`.
 
 ### Migrations
 
@@ -203,4 +216,17 @@ docker compose config
 ## Limites do protótipo
 
 Não há autenticação, pagamento, frete, envio de formulário, upload, reserva de estoque ou consulta real de pedidos. O catálogo é real no banco local; checkout e orçamento continuam protótipos. URLs externas de imagens exigirão allowlist quando o object storage for definido.
+
+## Propostas de orçamento
+
+Após autenticar em `/admin/login`, abra `/admin/orcamentos/{reference}`. Um administrador pode iniciar a análise, salvar a composição em centavos e enviar a proposta. O envio exige todos os anexos em estado `clean`; não libera download dos arquivos.
+
+Endpoints protegidos:
+
+- `POST /api/v1/admin/quotes/{reference}/analysis`
+- `PUT /api/v1/admin/quotes/{reference}/pricing`
+- `POST /api/v1/admin/quotes/{reference}/proposal`
+- `POST /api/v1/admin/quotes/expire`
+
+As requisições mutáveis exigem o cookie de sessão e `X-CSRF-Token`. A migration `000011_create_quote_proposals` é aplicada com o comando independente já documentado. E-mail ainda não é enviado: a proposta fica registrada como `not_configured` até a configuração de um provedor.
 

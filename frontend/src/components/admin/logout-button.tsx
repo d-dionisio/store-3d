@@ -1,0 +1,2 @@
+"use client";import{useRouter}from"next/navigation";import{getApiUrl}from"@/lib/env";
+export function LogoutButton(){const router=useRouter();const logout=async()=>{const csrf=sessionStorage.getItem("loja3d_admin_csrf")??"";await fetch(`${getApiUrl()}/api/v1/admin/session`,{method:"DELETE",credentials:"include",headers:{"X-CSRF-Token":csrf}});sessionStorage.removeItem("loja3d_admin_csrf");router.push("/admin/login");router.refresh()};return <button className="admin-logout" onClick={logout}>Encerrar sessão</button>}

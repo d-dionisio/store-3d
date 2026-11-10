@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	adminapp "example.com/loja-3d/backend/internal/application/admin"
 	catalogapp "example.com/loja-3d/backend/internal/application/catalog"
 	quoteapp "example.com/loja-3d/backend/internal/application/quote"
 	apihttp "example.com/loja-3d/backend/internal/http"
@@ -52,10 +53,12 @@ func main() {
 		slog.Warn("object storage is not configured; uploads are unavailable")
 	}
 	quoteHandler := handlers.NewQuoteHandler(quoteapp.New(quoteRepository, quoteStorage, bucket))
+	adminRepository := postgres.NewAdminRepository(pool)
+	adminHandler := handlers.NewAdminHandler(adminapp.New(adminRepository), envOrDefault("APP_ENV", "development") == "production")
 
 	server := &http.Server{
 		Addr:              ":" + port,
-		Handler:           apihttp.NewHandler(frontendOrigin, databaseHealth, catalogHandler, quoteHandler),
+		Handler:           apihttp.NewHandlerWithAdmin(frontendOrigin, databaseHealth, catalogHandler, quoteHandler, adminHandler),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,

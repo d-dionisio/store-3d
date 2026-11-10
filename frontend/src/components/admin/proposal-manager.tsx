@@ -1,0 +1,26 @@
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { AdminDetail, PricingInput, saveQuotePricing, sendQuoteProposal, startQuoteAnalysis } from "@/services/admin-api";
+
+const money = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
+const cents = (value: FormDataEntryValue | null) => Math.round(Number(value || 0) * 100);
+
+export function ProposalManager({ quote }: { quote: AdminDetail }) {
+  const router = useRouter();
+  const latest = quote.Proposals[0];
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  async function run(operation: () => Promise<void>, success: string) { setBusy(true); setMessage(""); try { await operation(); setMessage(success); router.refresh(); } catch (error) { setMessage(error instanceof Error ? error.message : "Não foi possível concluir a operação."); } finally { setBusy(false); } }
+  if (quote.Status === "submitted") return <section className="admin-panel admin-proposal"><h2>Análise técnica</h2><p>Inicie a análise para liberar a composição comercial.</p><button disabled={busy} onClick={() => run(() => startQuoteAnalysis(quote.Reference), "Análise iniciada.")}>Iniciar análise</button>{message && <p className="admin-feedback">{message}</p>}</section>;
+  return <section className="admin-panel admin-proposal"><div className="admin-section-title"><div><span className="admin-kicker">Proposta comercial</span><h2>Composição de preço</h2></div>{latest && <span className="admin-badge">v{latest.Version} · {latest.Status}</span>}</div>
+    {quote.Status === "under_review" ? <form onSubmit={(event) => { event.preventDefault(); const data = new FormData(event.currentTarget); const value: PricingInput = { material_cost_cents:cents(data.get("material")), energy_cost_cents:cents(data.get("energy")), machine_cost_cents:cents(data.get("machine")), finishing_cost_cents:cents(data.get("finishing")), packaging_cost_cents:cents(data.get("packaging")), other_costs_cents:cents(data.get("other")), margin_basis_points:Math.round(Number(data.get("margin")||0)*100), final_price_cents:cents(data.get("final")), production_lead_time_days:Number(data.get("lead")), estimated_completion_date:data.get("completion") ? new Date(String(data.get("completion"))).toISOString() : null, valid_until:new Date(String(data.get("validity"))).toISOString(), commercial_notes:String(data.get("notes")||""), shipping_included:data.get("shipping") === "on" }; void run(() => saveQuotePricing(quote.Reference,value),"Composição salva."); }}>
+      <div className="admin-form-grid">{[["material","Material",latest?.MaterialCostCents],["energy","Energia",latest?.EnergyCostCents],["machine","Tempo de máquina",latest?.MachineCostCents],["finishing","Acabamento",latest?.FinishingCostCents],["packaging","Embalagem",latest?.PackagingCostCents],["other","Outros",latest?.OtherCostsCents]].map(([name,label,value])=><label key={String(name)}>{label}<input name={String(name)} type="number" min="0" step="0.01" defaultValue={Number(value||0)/100}/></label>)}</div>
+      <div className="admin-form-grid"><label>Margem (%)<input name="margin" type="number" min="0" step="0.01" defaultValue={(latest?.MarginBasisPoints||0)/100}/></label><label>Preço final (R$)<input name="final" type="number" min="0" step="0.01" required defaultValue={(latest?.FinalPriceCents||0)/100}/></label><label>Fabricação (dias)<input name="lead" type="number" min="1" required defaultValue={latest?.ProductionLeadTimeDays||7}/></label><label>Conclusão estimada<input name="completion" type="date" defaultValue={latest?.EstimatedCompletionDate?.slice(0,10)}/></label><label>Validade<input name="validity" type="datetime-local" required defaultValue={latest?.ValidUntil?.slice(0,16)}/></label></div>
+      <label>Observações comerciais<textarea name="notes" defaultValue={latest?.CommercialNotes}/></label><label className="admin-checkbox"><input name="shipping" type="checkbox" defaultChecked={latest?.ShippingIncluded}/> O preço inclui frete. Fabricação e transporte permanecem separados quando desmarcado.</label>
+      <div className="admin-actions"><button disabled={busy} type="submit">Salvar rascunho</button><button className="admin-danger" disabled={busy || !latest || latest.Status!=="draft"} type="button" onClick={() => { if(window.confirm("Enviar esta proposta? Os valores serão preservados.")) void run(() => sendQuoteProposal(quote.Reference),"Proposta registrada. Notificação pendente de provedor de e-mail."); }}>Confirmar e enviar</button></div>
+    </form> : <div className="admin-financial"><span>Preço enviado</span><strong>{latest ? money.format(latest.FinalPriceCents/100) : "—"}</strong><small>Notificação: {latest?.NotificationStatus || "não registrada"}. Frete {latest?.ShippingIncluded ? "incluído" : "não incluído"}.</small></div>}
+    {message && <p className="admin-feedback">{message}</p>}{quote.Proposals.length>0 && <div className="admin-version-list"><h3>Histórico de versões</h3>{quote.Proposals.map(item=><div key={item.ID}><span>v{item.Version} · {item.Status}</span><strong>{money.format(item.FinalPriceCents/100)}</strong><small>{new Date(item.UpdatedAt).toLocaleString("pt-BR")}</small></div>)}</div>}
+  </section>;
+}

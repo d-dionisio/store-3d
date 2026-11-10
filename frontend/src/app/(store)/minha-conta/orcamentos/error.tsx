@@ -1,0 +1,1 @@
+"use client";export default function ErrorPage(){return <main className="mx-auto max-w-3xl px-6 py-24"><h1 className="text-4xl font-black">Não foi possível carregar seus orçamentos</h1><p className="mt-4 text-stone-600">Tente novamente em alguns instantes.</p></main>}

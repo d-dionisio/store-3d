@@ -1,0 +1,1 @@
+import{Suspense}from"react";import{ConfirmMagicLink}from"@/components/account/confirm-magic-link";export default function ConfirmPage(){return <Suspense fallback={<p>Validando...</p>}><ConfirmMagicLink/></Suspense>}

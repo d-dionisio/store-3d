@@ -310,3 +310,16 @@ Ainda não foram implementados:
 - A integração de e-mail ainda não está configurada. O envio comercial é persistido com `notification_status=not_configured`, sem simular entrega. O link seguro ao cliente depende da autenticação/capability prevista para a Etapa 7.4.
 - Mutações administrativas exigem sessão `admin`, cookie HTTP-only e token CSRF. Leitores (`quote_viewer`) não podem iniciar análise nem precificar.
 
+## Identidade e área do cliente (Etapa 7.4)
+
+- A autenticação do cliente é independente da administrativa. `customer_magic_links` e `customer_sessions` nunca compartilham cookies, tokens ou tabelas com `admin_sessions`.
+- Magic links usam 32 bytes aleatórios, persistem somente SHA-256, expiram em 15 minutos e são consumidos atomicamente uma única vez.
+- O endpoint de solicitação sempre devolve uma resposta genérica. Isso evita revelar se um endereço possui conta ou orçamento.
+- Após provar a titularidade do e-mail, o backend cria ou verifica `users` e associa somente os orçamentos legados ainda sem usuário cujo e-mail normalizado seja idêntico.
+- Sessões duram 30 dias, são revogáveis e usam cookie HTTP-only, `Secure` em produção e `SameSite=Lax`. Decisões e logout exigem token CSRF separado.
+- Toda consulta filtra simultaneamente por `user_id` e referência. Referências fornecidas pelo navegador não são consideradas autorização.
+- `quote_proposal_decisions` identifica orçamento, versão exata, cliente, decisão e horário. Locks no orçamento e constraints únicas impedem aceite/recusa concorrente ou duplicado.
+- Apenas a versão mais recente enviada, ainda válida e com todos os arquivos `clean`, pode ser aceita ou recusada. O conteúdo da proposta enviada permanece imutável.
+- O adaptador `development` apenas registra a mensagem no log e só pode ser habilitado quando `APP_ENV=development`. Em produção, o adaptador permanece indisponível até a integração de um provedor real.
+- A aceitação atualiza o orçamento para `approved`, mas não cria pedido, reserva estoque, cobra pagamento ou inicia produção.
+

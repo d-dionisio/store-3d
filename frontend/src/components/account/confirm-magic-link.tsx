@@ -1,0 +1,3 @@
+"use client";
+import{useEffect,useState}from"react";import{useRouter,useSearchParams}from"next/navigation";import{verifyMagicLink}from"@/services/customer-api";
+export function ConfirmMagicLink(){const q=useSearchParams();const router=useRouter();const token=q.get("token");const[msg,setMsg]=useState("Validando seu link...");useEffect(()=>{if(!token)return;verifyMagicLink(token).then(v=>{sessionStorage.setItem("loja3d_customer_csrf",v.csrf_token);router.replace("/minha-conta/orcamentos");router.refresh()}).catch(()=>setMsg("Este link é inválido, expirou ou já foi utilizado."))},[token,router]);return <main className="mx-auto max-w-xl px-6 py-24"><p className="rounded-2xl bg-white p-8 text-center shadow">{token?msg:"Link inválido."}</p></main>}

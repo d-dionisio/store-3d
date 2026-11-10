@@ -230,3 +230,27 @@ Endpoints protegidos:
 
 As requisições mutáveis exigem o cookie de sessão e `X-CSRF-Token`. A migration `000011_create_quote_proposals` é aplicada com o comando independente já documentado. E-mail ainda não é enviado: a proposta fica registrada como `not_configured` até a configuração de um provedor.
 
+## Área do cliente e magic link
+
+Configure o adaptador local somente durante desenvolvimento:
+
+```dotenv
+APP_ENV=development
+EMAIL_PROVIDER=development
+FRONTEND_ORIGIN=http://localhost:3000
+```
+
+Em `/minha-conta`, informe o e-mail usado na solicitação. O adaptador local escreve no log da API um link de desenvolvimento claramente identificado; ele não entrega uma mensagem real. `EMAIL_PROVIDER=development` é ignorado quando `APP_ENV=production`.
+
+Endpoints:
+
+- `POST /api/v1/customer/magic-links`
+- `POST /api/v1/customer/magic-links/verify`
+- `DELETE /api/v1/customer/session`
+- `GET /api/v1/customer/profile`
+- `GET /api/v1/customer/quotes`
+- `GET /api/v1/customer/quotes/{reference}`
+- `POST /api/v1/customer/quotes/{reference}/decision`
+
+As páginas protegidas ficam em `/minha-conta/orcamentos` e `/minha-conta/orcamentos/{reference}`. Aceite, recusa e logout exigem `X-CSRF-Token`. Para produção ainda é necessário implementar um provedor real de e-mail e substituir o adaptador indisponível.
+

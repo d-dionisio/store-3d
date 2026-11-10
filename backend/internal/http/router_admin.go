@@ -11,12 +11,15 @@ func NewHandler(frontendOrigin string, readiness handlers.ReadinessChecker, cata
 	if len(quotes) > 0 {
 		q = quotes[0]
 	}
-	return newHandler(frontendOrigin, readiness, catalog, q, nil)
+	return newHandler(frontendOrigin, readiness, catalog, q, nil, nil)
 }
 func NewHandlerWithAdmin(frontendOrigin string, readiness handlers.ReadinessChecker, catalog *handlers.CatalogHandler, quotes *handlers.QuoteHandler, admin *handlers.AdminHandler) http.Handler {
-	return newHandler(frontendOrigin, readiness, catalog, quotes, admin)
+	return newHandler(frontendOrigin, readiness, catalog, quotes, admin, nil)
 }
-func newHandler(frontendOrigin string, readiness handlers.ReadinessChecker, catalog *handlers.CatalogHandler, quotes *handlers.QuoteHandler, admin *handlers.AdminHandler) http.Handler {
+func NewHandlerFull(frontendOrigin string, readiness handlers.ReadinessChecker, catalog *handlers.CatalogHandler, quotes *handlers.QuoteHandler, admin *handlers.AdminHandler, customer *handlers.CustomerHandler) http.Handler {
+	return newHandler(frontendOrigin, readiness, catalog, quotes, admin, customer)
+}
+func newHandler(frontendOrigin string, readiness handlers.ReadinessChecker, catalog *handlers.CatalogHandler, quotes *handlers.QuoteHandler, admin *handlers.AdminHandler, customer *handlers.CustomerHandler) http.Handler {
 	router := http.NewServeMux()
 	router.HandleFunc("GET /api/v1/health", handlers.Health)
 	router.HandleFunc("GET /api/v1/ready", handlers.Ready(readiness))
@@ -42,6 +45,15 @@ func newHandler(frontendOrigin string, readiness handlers.ReadinessChecker, cata
 		router.HandleFunc("PUT /api/v1/admin/quotes/{reference}/pricing", admin.SavePricing)
 		router.HandleFunc("POST /api/v1/admin/quotes/{reference}/proposal", admin.SendProposal)
 		router.HandleFunc("POST /api/v1/admin/quotes/expire", admin.Expire)
+	}
+	if customer != nil {
+		router.HandleFunc("POST /api/v1/customer/magic-links", customer.RequestLink)
+		router.HandleFunc("POST /api/v1/customer/magic-links/verify", customer.Verify)
+		router.HandleFunc("DELETE /api/v1/customer/session", customer.Logout)
+		router.HandleFunc("GET /api/v1/customer/profile", customer.Profile)
+		router.HandleFunc("GET /api/v1/customer/quotes", customer.List)
+		router.HandleFunc("GET /api/v1/customer/quotes/{reference}", customer.Get)
+		router.HandleFunc("POST /api/v1/customer/quotes/{reference}/decision", customer.Decide)
 	}
 	return middleware.CORS(frontendOrigin)(router)
 }

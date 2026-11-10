@@ -184,15 +184,16 @@ func (r *CustomerRepository) UpdateOrderAddress(ctx context.Context, user, ref, 
 		return e
 	}
 	defer tx.Rollback(ctx)
-	var orderID string
+	var orderID, readiness string
 	var included bool
-	e = tx.QueryRow(ctx, `SELECT id,shipping_included FROM orders WHERE order_number=$1 AND user_id=$2 AND status='pending_payment' FOR UPDATE`, ref, user).Scan(&orderID, &included)
+	e = tx.QueryRow(ctx, `SELECT id,shipping_included,payment_readiness FROM orders WHERE order_number=$1 AND user_id=$2 AND status='pending_payment' FOR UPDATE`, ref, user).Scan(&orderID, &included, &readiness)
 	if errors.Is(e, pgx.ErrNoRows) {
 		return app.ErrNotFound
 	}
 	if e != nil {
 		return e
 	}
+	if readiness == "ready" { return app.ErrInvalidCart }
 	tag, e := tx.Exec(ctx, `INSERT INTO order_addresses(order_id,address_type,recipient_name,postal_code,street,number,complement,district,city,state_code,country_code) SELECT $1,'shipping',recipient_name,postal_code,street,number,complement,district,city,state_code,country_code FROM addresses WHERE id=$2 AND user_id=$3 ON CONFLICT(order_id,address_type) DO UPDATE SET recipient_name=excluded.recipient_name,postal_code=excluded.postal_code,street=excluded.street,number=excluded.number,complement=excluded.complement,district=excluded.district,city=excluded.city,state_code=excluded.state_code,country_code=excluded.country_code`, orderID, addressID, user)
 	if e != nil {
 		return e
@@ -200,11 +201,11 @@ func (r *CustomerRepository) UpdateOrderAddress(ctx context.Context, user, ref, 
 	if tag.RowsAffected() != 1 {
 		return app.ErrForbidden
 	}
-	readiness := "awaiting_shipping_quote"
+	readiness = "awaiting_shipping_quote"
 	if included {
 		readiness = "ready"
 	}
-	_, e = tx.Exec(ctx, `UPDATE orders SET payment_readiness=$2,updated_at=now() WHERE id=$1`, orderID, readiness)
+	_, e = tx.Exec(ctx, `UPDATE orders SET payment_readiness=$2,shipping_cents=0,total_cents=subtotal_cents-discount_cents,updated_at=now() WHERE id=$1`, orderID, readiness)
 	if e != nil {
 		return e
 	}

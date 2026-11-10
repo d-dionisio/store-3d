@@ -291,3 +291,23 @@ O checkout de catálogo revalida o carrinho no backend e aceita somente IDs de v
 
 `POST /orders/catalog` exige `Idempotency-Key`, sessão do cliente e CSRF. Pedidos que precisam de frete permanecem em `awaiting_shipping_quote`; nenhum preço de entrega é simulado. As páginas ficam em `/checkout`, `/checkout/confirmacao`, `/minha-conta/pedidos` e `/minha-conta/pedidos/{reference}`.
 
+## Cotação de frete — Melhor Envio
+
+Configure no `.env` um token do sandbox, `MELHOR_ENVIO_USER_AGENT` com nome e e-mail técnico e o CEP de origem. A API usa `MELHOR_ENVIO_BASE_URL=https://sandbox.melhorenvio.com.br` por padrão de desenvolvimento.
+
+- `POST /api/v1/customer/orders/{reference}/shipping-quotes`: consulta ou reaproveita modalidades ainda válidas.
+- `POST /api/v1/customer/orders/{reference}/shipping-selection`: seleciona uma cotação pertencente ao pedido e preserva seu snapshot.
+- `PUT /api/v1/admin/orders/{reference}/packages`: registra peso e dimensões finais de pedidos personalizados.
+
+As três operações exigem sessão e CSRF; as duas primeiras exigem propriedade do pedido. Para aplicar a estrutura: `cd backend`, `go run ./cmd/migrate up` e `go run ./cmd/migrate version`. Sem token configurado, a API continua iniciando, mas a cotação retorna HTTP 503 e nenhum valor fictício é usado.
+
+## Pagamento PIX com Mercado Pago
+
+Configure `MERCADO_PAGO_ENVIRONMENT=sandbox`, o access token e a assinatura secreta do webhook de teste. Credenciais de produção possuem variáveis separadas e não devem ser copiadas para arquivos versionados.
+
+- `POST /api/v1/customer/orders/{reference}/payments/pix`: cria ou recupera a tentativa PIX idempotente.
+- `GET /api/v1/customer/orders/{reference}/payment`: consulta o estado financeiro persistido.
+- `POST /api/v1/webhooks/mercado-pago?data.id={payment_id}`: recebe notificações assinadas.
+
+Cadastre a URL pública HTTPS do último endpoint no painel do Mercado Pago para o tópico de pagamentos. O webhook consulta o pagamento diretamente no provedor antes de confirmar o pedido. Sem credenciais configuradas, a API inicia normalmente e a criação de PIX retorna HTTP 503.
+

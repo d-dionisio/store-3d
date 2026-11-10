@@ -11,15 +11,21 @@ func NewHandler(frontendOrigin string, readiness handlers.ReadinessChecker, cata
 	if len(quotes) > 0 {
 		q = quotes[0]
 	}
-	return newHandler(frontendOrigin, readiness, catalog, q, nil, nil)
+	return newHandler(frontendOrigin, readiness, catalog, q, nil, nil, nil, nil)
 }
 func NewHandlerWithAdmin(frontendOrigin string, readiness handlers.ReadinessChecker, catalog *handlers.CatalogHandler, quotes *handlers.QuoteHandler, admin *handlers.AdminHandler) http.Handler {
-	return newHandler(frontendOrigin, readiness, catalog, quotes, admin, nil)
+	return newHandler(frontendOrigin, readiness, catalog, quotes, admin, nil, nil, nil)
 }
 func NewHandlerFull(frontendOrigin string, readiness handlers.ReadinessChecker, catalog *handlers.CatalogHandler, quotes *handlers.QuoteHandler, admin *handlers.AdminHandler, customer *handlers.CustomerHandler) http.Handler {
-	return newHandler(frontendOrigin, readiness, catalog, quotes, admin, customer)
+	return newHandler(frontendOrigin, readiness, catalog, quotes, admin, customer, nil, nil)
 }
-func newHandler(frontendOrigin string, readiness handlers.ReadinessChecker, catalog *handlers.CatalogHandler, quotes *handlers.QuoteHandler, admin *handlers.AdminHandler, customer *handlers.CustomerHandler) http.Handler {
+func NewHandlerWithShipping(frontendOrigin string, readiness handlers.ReadinessChecker, catalog *handlers.CatalogHandler, quotes *handlers.QuoteHandler, admin *handlers.AdminHandler, customer *handlers.CustomerHandler, shipping *handlers.ShippingHandler) http.Handler {
+	return newHandler(frontendOrigin, readiness, catalog, quotes, admin, customer, shipping, nil)
+}
+func NewHandlerComplete(frontendOrigin string, readiness handlers.ReadinessChecker, catalog *handlers.CatalogHandler, quotes *handlers.QuoteHandler, admin *handlers.AdminHandler, customer *handlers.CustomerHandler, shipping *handlers.ShippingHandler, payment *handlers.PaymentHandler) http.Handler {
+	return newHandler(frontendOrigin, readiness, catalog, quotes, admin, customer, shipping, payment)
+}
+func newHandler(frontendOrigin string, readiness handlers.ReadinessChecker, catalog *handlers.CatalogHandler, quotes *handlers.QuoteHandler, admin *handlers.AdminHandler, customer *handlers.CustomerHandler, shipping *handlers.ShippingHandler, payment *handlers.PaymentHandler) http.Handler {
 	router := http.NewServeMux()
 	router.HandleFunc("GET /api/v1/health", handlers.Health)
 	router.HandleFunc("GET /api/v1/ready", handlers.Ready(readiness))
@@ -63,6 +69,16 @@ func newHandler(frontendOrigin string, readiness handlers.ReadinessChecker, cata
 		router.HandleFunc("POST /api/v1/customer/orders/{reference}/prepare-payment", customer.PrepareOrder)
 		router.HandleFunc("GET /api/v1/customer/orders", customer.ListOrders)
 		router.HandleFunc("GET /api/v1/customer/orders/{reference}", customer.GetOrder)
+	}
+	if shipping != nil {
+		router.HandleFunc("POST /api/v1/customer/orders/{reference}/shipping-quotes", shipping.Quote)
+		router.HandleFunc("POST /api/v1/customer/orders/{reference}/shipping-selection", shipping.Select)
+		router.HandleFunc("PUT /api/v1/admin/orders/{reference}/packages", shipping.SavePackages)
+	}
+	if payment != nil {
+		router.HandleFunc("POST /api/v1/customer/orders/{reference}/payments/pix", payment.CreatePIX)
+		router.HandleFunc("GET /api/v1/customer/orders/{reference}/payment", payment.Status)
+		router.HandleFunc("POST /api/v1/webhooks/mercado-pago", payment.Webhook)
 	}
 	return middleware.CORS(frontendOrigin)(router)
 }

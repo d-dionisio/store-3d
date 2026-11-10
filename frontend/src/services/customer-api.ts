@@ -22,3 +22,10 @@ export async function createCatalogOrder(items:CartInput[],addressId:string,key:
 export type CustomerOrder={Reference:string;Status:string;PaymentReadiness:string;TotalCents:number;CreatedAt:string};
 export async function listOrders(cookie?:string){return call<CustomerOrder[]>("/orders",{headers:cookie?{Cookie:cookie}:undefined})}
 export async function getOrder(reference:string,cookie?:string){return call<CustomerOrder&{Items:CartLine[];Address:CustomerAddress|null;ShippingRequired:boolean}>(`/orders/${encodeURIComponent(reference)}`,{headers:cookie?{Cookie:cookie}:undefined})}
+export type ShippingQuote={ID:string;ServiceCode:string;CarrierName:string;ServiceName:string;PriceCents:number;MinDays:number;MaxDays:number;ExpiresAt:string};
+export async function quoteShipping(reference:string){const csrf=sessionStorage.getItem("loja3d_customer_csrf")||"";return call<ShippingQuote[]>(`/orders/${encodeURIComponent(reference)}/shipping-quotes`,{method:"POST",headers:{"X-CSRF-Token":csrf}})}
+export async function selectShipping(reference:string,quoteId:string){const csrf=sessionStorage.getItem("loja3d_customer_csrf")||"";return call<void>(`/orders/${encodeURIComponent(reference)}/shipping-selection`,{method:"POST",headers:{"X-CSRF-Token":csrf},body:JSON.stringify({quote_id:quoteId})})}
+export type PixPayment={AttemptID:string;Status:string;QRCode:string;QRCodeBase64:string;TicketURL:string;AmountCents:number;ExpiresAt:string|null};
+export type PaymentStatus={AttemptID:string;OrderReference:string;Method:string;Status:string;AmountCents:number;PaidAmountCents:number;RefundedAmountCents:number;ExpiresAt:string|null;PaidAt:string|null};
+export async function createPix(reference:string){const csrf=sessionStorage.getItem("loja3d_customer_csrf")||"";return call<PixPayment>(`/orders/${encodeURIComponent(reference)}/payments/pix`,{method:"POST",headers:{"X-CSRF-Token":csrf}})}
+export async function paymentStatus(reference:string){return call<PaymentStatus>(`/orders/${encodeURIComponent(reference)}/payment`)}

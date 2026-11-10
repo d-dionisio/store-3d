@@ -13,11 +13,15 @@ import (
 	adminapp "example.com/loja-3d/backend/internal/application/admin"
 	catalogapp "example.com/loja-3d/backend/internal/application/catalog"
 	customerapp "example.com/loja-3d/backend/internal/application/customer"
+	paymentapp "example.com/loja-3d/backend/internal/application/payment"
 	quoteapp "example.com/loja-3d/backend/internal/application/quote"
+	shippingapp "example.com/loja-3d/backend/internal/application/shipping"
 	apihttp "example.com/loja-3d/backend/internal/http"
 	"example.com/loja-3d/backend/internal/http/handlers"
 	"example.com/loja-3d/backend/internal/infrastructure/mail"
+	mercadopago "example.com/loja-3d/backend/internal/infrastructure/payment/mercadopago"
 	"example.com/loja-3d/backend/internal/infrastructure/postgres"
+	melhorenvio "example.com/loja-3d/backend/internal/infrastructure/shipping/melhorenvio"
 	"example.com/loja-3d/backend/internal/infrastructure/storage"
 )
 
@@ -65,10 +69,55 @@ func main() {
 	customerRepository := postgres.NewCustomerRepository(pool)
 	customerService := customerapp.New(customerRepository, customerMailer, envOrDefault("FRONTEND_ORIGIN", "http://localhost:3000"))
 	customerHandler := handlers.NewCustomerHandler(customerService, appEnv == "production")
+	shippingRepository := postgres.NewShippingRepository(pool)
+	var shippingProvider shippingapp.Provider = melhorenvio.Unavailable{}
+	shippingTimeout, parseErr := time.ParseDuration(envOrDefault("MELHOR_ENVIO_TIMEOUT", "8s"))
+	if parseErr != nil || shippingTimeout <= 0 {
+		shippingTimeout = 8 * time.Second
+	}
+	shippingClient, shippingErr := melhorenvio.New(
+		envOrDefault("MELHOR_ENVIO_BASE_URL", "https://sandbox.melhorenvio.com.br"),
+		os.Getenv("MELHOR_ENVIO_TOKEN"), os.Getenv("MELHOR_ENVIO_USER_AGENT"),
+		&http.Client{Timeout: shippingTimeout},
+	)
+	if shippingErr == nil {
+		shippingProvider = shippingClient
+	} else {
+		slog.Warn("Melhor Envio is not configured; shipping quotes are unavailable")
+	}
+	quoteTTL, parseErr := time.ParseDuration(envOrDefault("SHIPPING_QUOTE_TTL", "15m"))
+	if parseErr != nil || quoteTTL <= 0 {
+		quoteTTL = 15 * time.Minute
+	}
+	shippingService := shippingapp.New(shippingRepository, shippingProvider, os.Getenv("MELHOR_ENVIO_ORIGIN_POSTAL_CODE"), quoteTTL)
+	shippingHandler := handlers.NewShippingHandler(shippingService, customerService, adminapp.New(adminRepository))
+	paymentRepository := postgres.NewPaymentRepository(pool)
+	var paymentProvider paymentapp.Provider = mercadopago.Unavailable{}
+	mpEnvironment := envOrDefault("MERCADO_PAGO_ENVIRONMENT", "sandbox")
+	mpTokenKey, mpSecretKey := "MERCADO_PAGO_SANDBOX_ACCESS_TOKEN", "MERCADO_PAGO_SANDBOX_WEBHOOK_SECRET"
+	if mpEnvironment == "production" {
+		mpTokenKey, mpSecretKey = "MERCADO_PAGO_PRODUCTION_ACCESS_TOKEN", "MERCADO_PAGO_PRODUCTION_WEBHOOK_SECRET"
+	}
+	mpTimeout, parseErr := time.ParseDuration(envOrDefault("MERCADO_PAGO_TIMEOUT", "8s"))
+	if parseErr != nil || mpTimeout <= 0 {
+		mpTimeout = 8 * time.Second
+	}
+	mpClient, mpErr := mercadopago.New("https://api.mercadopago.com", os.Getenv(mpTokenKey), os.Getenv(mpSecretKey), &http.Client{Timeout: mpTimeout})
+	if mpErr == nil {
+		paymentProvider = mpClient
+	} else {
+		slog.Warn("Mercado Pago is not configured; payments are unavailable", "environment", mpEnvironment)
+	}
+	mpTTL, parseErr := time.ParseDuration(envOrDefault("MERCADO_PAGO_PIX_TTL", "30m"))
+	if parseErr != nil || mpTTL <= 0 {
+		mpTTL = 30 * time.Minute
+	}
+	paymentService := paymentapp.New(paymentRepository, paymentProvider, mpTTL)
+	paymentHandler := handlers.NewPaymentHandler(paymentService, customerService)
 
 	server := &http.Server{
 		Addr:              ":" + port,
-		Handler:           apihttp.NewHandlerFull(frontendOrigin, databaseHealth, catalogHandler, quoteHandler, adminHandler, customerHandler),
+		Handler:           apihttp.NewHandlerComplete(frontendOrigin, databaseHealth, catalogHandler, quoteHandler, adminHandler, customerHandler, shippingHandler, paymentHandler),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,

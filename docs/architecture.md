@@ -343,5 +343,25 @@ Ainda não foram implementados:
 - `payment_readiness` distingue `awaiting_address`, `awaiting_shipping_quote` e `ready`. O status comercial continua `pending_payment`.
 - Produtos físicos exigem frete. Pedidos personalizados também exigem frete quando `shipping_included=false`. Sem `order_shipping` real, `PrepareOrderForPayment` retorna `shipping_required` e não inventa preço.
 - O contrato futuro de Melhor Envio utiliza as tabelas existentes `shipping_quotes` e `order_shipping`; a Etapa 8.2 não cria cotações simuladas.
+
+## Etapa 9.1 — cotação de frete
+
+- A integração usa exclusivamente `POST /api/v2/me/shipment/calculate`. Token e `User-Agent` ficam no backend; o navegador nunca recebe credenciais do Melhor Envio.
+- Produtos de catálogo usam peso e dimensões da variante. Pedidos personalizados usam `order_packages`, preenchido por administrador; dimensões de STL/3MF nunca são tratadas como embalagem.
+- `shipping_quotes.order_id` impede selecionar uma cotação de outro pedido. `request_hash` permite reutilizar uma consulta idêntica enquanto ela estiver válida, reduzindo chamadas repetidas.
+- `expires_at` é uma validade local (`SHIPPING_QUOTE_TTL`), pois o cálculo não fornece uma expiração universal. Uma cotação expirada não pode ser selecionada.
+- `order_shipping` é o snapshot comercial escolhido. A seleção bloqueia concorrência pelo pedido, copia serviço, transportadora, preço e prazo e atualiza o total em uma única transação.
+- Um pedido já `ready` ou fora de `pending_payment` não aceita troca de endereço, pacotes ou frete. A compra de etiquetas e rastreamento permanecem fora do escopo.
+
+## Etapa 8.3 — pagamentos Mercado Pago
+
+- PIX utiliza a Payments API (`POST /v1/payments`) com `X-Idempotency-Key`; consultas e webhooks reconciliam por `GET /v1/payments/{id}`.
+- O pedido precisa pertencer ao cliente, estar em `pending_payment`, possuir moeda BRL, total positivo e `payment_readiness=ready` antes da reserva da tentativa.
+- `payments` representa a obrigação financeira; `payment_attempts` representa uma chamada idempotente ao provedor. Apenas uma obrigação aberta é permitida por pedido.
+- O backend compara `external_reference`, moeda e valor em centavos antes de persistir ou confirmar. PIX expirado é encerrado antes de permitir nova obrigação.
+- Webhooks validam HMAC-SHA256 em tempo constante usando `x-signature`, `x-request-id` e `data.id`. O payload apenas dispara consulta autenticada ao Mercado Pago e nunca confirma um pedido diretamente.
+- `provider_updated_at` impede regressão por eventos fora de ordem. Eventos são deduplicados, falhas podem ser reprocessadas e toda mudança gera histórico financeiro.
+- Somente `paid` confirma o pedido. Estados pending/processing/authorized não iniciam produção. Reembolsos atualizam o agregado e criam registro em `payment_refunds`.
+- Cartão permanece preparado conceitualmente por `method=card`, mas deverá usar MercadoPago.js/Card Payment Brick para tokenização; PAN, CVV e token bruto não são persistidos.
 - A criação do pedido, itens, endereço, histórico e auditoria ocorre numa única transação. Não há captura de pagamento, produção nem reserva definitiva de estoque.
 

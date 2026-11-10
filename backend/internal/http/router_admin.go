@@ -54,6 +54,7 @@ func newHandler(frontendOrigin string, readiness handlers.ReadinessChecker, cata
 		router.HandleFunc("GET /api/v1/customer/quotes", customer.List)
 		router.HandleFunc("GET /api/v1/customer/quotes/{reference}", customer.Get)
 		router.HandleFunc("POST /api/v1/customer/quotes/{reference}/decision", customer.Decide)
+		router.HandleFunc("POST /api/v1/customer/quotes/{reference}/convert", customer.Convert)
 	}
 	return middleware.CORS(frontendOrigin)(router)
 }

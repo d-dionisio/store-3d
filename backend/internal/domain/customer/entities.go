@@ -28,3 +28,4 @@ type QuoteDetail struct {
 	Color, Notes string
 	Proposals    []Proposal
 }
+type OrderResult struct{ Reference, Status string }

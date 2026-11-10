@@ -323,3 +323,14 @@ Ainda não foram implementados:
 - O adaptador `development` apenas registra a mensagem no log e só pode ser habilitado quando `APP_ENV=development`. Em produção, o adaptador permanece indisponível até a integração de um provedor real.
 - A aceitação atualiza o orçamento para `approved`, mas não cria pedido, reserva estoque, cobra pagamento ou inicia produção.
 
+## Conversão de orçamento aprovado em pedido (Etapa 8.1)
+
+- A conversão é uma operação explícita do cliente após o aceite. Aprovar uma proposta não cria automaticamente um pedido.
+- `CustomerRepository.ConvertQuote` bloqueia o orçamento com `SELECT ... FOR UPDATE`, valida proprietário, status `approved`, decisão `accepted`, versão mais recente e validade no instante da decisão.
+- `orders.quote_id` permanece a proteção idempotente principal. O índice único existente impede mais de um pedido por orçamento; chamadas repetidas retornam o pedido já criado.
+- O pedido inicia em `pending_payment`. Esse estado não representa pagamento, reserva de estoque, produção ou contratação de frete.
+- A migration 13 adiciona ao pedido snapshots de `quote_proposal_id`, versão, prazo de fabricação, indicação de frete e observações comerciais.
+- Itens personalizados mantêm quantidade e `approved_total_cents`. O total aprovado não é reconstruído por divisão unitária, evitando perda de centavos quando preço ÷ quantidade não é exato.
+- Material, cor, dimensões, descrição, cliente, telefone, preço e quantidade são copiados no momento da conversão e não dependem de consultas futuras ao catálogo.
+- Pedido, item, evento inicial e auditoria do cliente são gravados na mesma transação. Qualquer falha provoca rollback integral.
+

@@ -18,6 +18,7 @@ var ErrNotFound = errors.New("not found")
 var ErrInvalidDecision = errors.New("invalid decision")
 var ErrRateLimited = errors.New("rate limited")
 var ErrForbidden = errors.New("forbidden")
+var ErrInvalidConversion = errors.New("invalid quote conversion")
 
 type Repository interface {
 	CreateMagicLink(context.Context, string, string, string, time.Time) error
@@ -28,6 +29,7 @@ type Repository interface {
 	ListQuotes(context.Context, string) ([]domain.QuoteSummary, error)
 	GetQuote(context.Context, string, string) (domain.QuoteDetail, error)
 	Decide(context.Context, string, string, string, string, string) error
+	ConvertQuote(context.Context, string, string, string) (domain.OrderResult, error)
 }
 type Mailer interface {
 	SendMagicLink(context.Context, string, string) error
@@ -108,4 +110,7 @@ func (s *Service) Decide(ctx context.Context, v domain.Session, ref, proposalID,
 }
 func (s *Service) Logout(ctx context.Context, v domain.Session) error {
 	return s.repo.RevokeSession(ctx, v.ID)
+}
+func (s *Service) ConvertQuote(ctx context.Context, v domain.Session, ref string) (domain.OrderResult, error) {
+	return s.repo.ConvertQuote(ctx, v.UserID, ref, v.ID)
 }

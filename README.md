@@ -254,3 +254,26 @@ Endpoints:
 
 As páginas protegidas ficam em `/minha-conta/orcamentos` e `/minha-conta/orcamentos/{reference}`. Aceite, recusa e logout exigem `X-CSRF-Token`. Para produção ainda é necessário implementar um provedor real de e-mail e substituir o adaptador indisponível.
 
+## Conversão de proposta aprovada em pedido
+
+Depois que o cliente aceita a versão mais recente de uma proposta, a tela do orçamento disponibiliza “Converter em pedido”. A operação usa:
+
+```http
+POST /api/v1/customer/quotes/{reference}/convert
+Cookie: loja3d_customer_session=...
+X-CSRF-Token: ...
+```
+
+Resposta inicial ou idempotente:
+
+```json
+{
+  "data": {
+    "reference": "PED-...",
+    "status": "pending_payment"
+  }
+}
+```
+
+O pedido apenas registra a obrigação comercial aprovada. Checkout, pagamento, frete, estoque e produção não são iniciados nesta etapa. A estrutura necessária é aplicada pela migration `000013_add_quote_order_snapshots`.
+

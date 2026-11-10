@@ -29,6 +29,8 @@ func customerError(w http.ResponseWriter, e error) {
 		writeQuoteJSON(w, 404, map[string]any{"error": map[string]string{"code": "not_found", "message": "Orçamento não encontrado."}})
 	case errors.Is(e, app.ErrInvalidDecision):
 		writeQuoteJSON(w, 409, map[string]any{"error": map[string]string{"code": "invalid_decision", "message": "A proposta não pode mais ser decidida."}})
+	case errors.Is(e, app.ErrInvalidConversion):
+		writeQuoteJSON(w, 409, map[string]any{"error": map[string]string{"code": "invalid_conversion", "message": "O orçamento não pode ser convertido em pedido."}})
 	default:
 		writeQuoteJSON(w, 500, map[string]any{"error": map[string]string{"code": "internal_error", "message": "Falha interna."}})
 	}
@@ -152,4 +154,21 @@ func (h *CustomerHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	}
 	http.SetCookie(w, &http.Cookie{Name: "loja3d_customer_session", Value: "", Path: "/", HttpOnly: true, Secure: h.secure, SameSite: http.SameSiteLaxMode, MaxAge: -1})
 	w.WriteHeader(204)
+}
+func (h *CustomerHandler) Convert(w http.ResponseWriter, r *http.Request) {
+	s, e := h.session(r)
+	if e != nil {
+		customerError(w, e)
+		return
+	}
+	if !app.CSRF(r.Header.Get("X-CSRF-Token"), s.CSRFHash) {
+		customerError(w, app.ErrForbidden)
+		return
+	}
+	result, e := h.service.ConvertQuote(r.Context(), s, r.PathValue("reference"))
+	if e != nil {
+		customerError(w, e)
+		return
+	}
+	writeQuoteJSON(w, http.StatusOK, map[string]any{"data": map[string]string{"reference": result.Reference, "status": result.Status}})
 }

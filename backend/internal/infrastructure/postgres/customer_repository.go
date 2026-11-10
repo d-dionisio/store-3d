@@ -2,7 +2,10 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strconv"
+	"strings"
 	"time"
 
 	app "example.com/loja-3d/backend/internal/application/customer"
@@ -167,4 +170,79 @@ func (r *CustomerRepository) Decide(ctx context.Context, user, ref, proposalID, 
 		return e
 	}
 	return tx.Commit(ctx)
+}
+
+func (r *CustomerRepository) ConvertQuote(ctx context.Context, user, ref, session string) (domain.OrderResult, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return domain.OrderResult{}, err
+	}
+	defer tx.Rollback(ctx)
+	var quoteID, status, name, email, phone, material, color, dimensions, notes string
+	var quantity int
+	err = tx.QueryRow(ctx, `SELECT q.id,q.status,q.customer_name,q.customer_email,coalesce(q.customer_phone,''),q.requested_quantity,coalesce(m.name,''),coalesce(c.name,''),concat_ws(' × ',q.width_mm,q.height_mm,q.depth_mm),coalesce(q.notes,'') FROM quotes q LEFT JOIN materials m ON m.id=q.material_id LEFT JOIN colors c ON c.id=q.color_id WHERE q.user_id=$1 AND q.quote_number=$2 FOR UPDATE OF q`, user, ref).Scan(&quoteID, &status, &name, &email, &phone, &quantity, &material, &color, &dimensions, &notes)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.OrderResult{}, app.ErrNotFound
+	}
+	if err != nil {
+		return domain.OrderResult{}, err
+	}
+	var existing domain.OrderResult
+	err = tx.QueryRow(ctx, `SELECT order_number,status FROM orders WHERE quote_id=$1`, quoteID).Scan(&existing.Reference, &existing.Status)
+	if err == nil {
+		if e := tx.Commit(ctx); e != nil {
+			return domain.OrderResult{}, e
+		}
+		return existing, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return domain.OrderResult{}, err
+	}
+	if status != "approved" {
+		return domain.OrderResult{}, app.ErrInvalidConversion
+	}
+	var proposalID, commercialNotes string
+	var version, lead int
+	var price int64
+	var shippingIncluded bool
+	var validUntil, decidedAt time.Time
+	err = tx.QueryRow(ctx, `SELECT p.id,p.version,p.final_price_cents,p.production_lead_time_days,p.shipping_included,coalesce(p.commercial_notes,''),p.valid_until,d.decided_at FROM quote_proposal_decisions d JOIN quote_proposals p ON p.id=d.proposal_id WHERE d.quote_id=$1 AND d.user_id=$2 AND d.decision='accepted'`, quoteID, user).Scan(&proposalID, &version, &price, &lead, &shippingIncluded, &commercialNotes, &validUntil, &decidedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.OrderResult{}, app.ErrInvalidConversion
+	}
+	if err != nil {
+		return domain.OrderResult{}, err
+	}
+	var latest int
+	if err = tx.QueryRow(ctx, `SELECT max(version) FROM quote_proposals WHERE quote_id=$1`, quoteID).Scan(&latest); err != nil {
+		return domain.OrderResult{}, err
+	}
+	if version != latest || decidedAt.After(validUntil) {
+		return domain.OrderResult{}, app.ErrInvalidConversion
+	}
+	orderNumber := "PED-" + strings.ToUpper(strings.ReplaceAll(quoteID, "-", "")[:16])
+	var orderID string
+	err = tx.QueryRow(ctx, `INSERT INTO orders(order_number,quote_id,user_id,status,customer_name,customer_email,customer_phone,subtotal_cents,shipping_cents,discount_cents,total_cents,notes,placed_at,quote_proposal_id,quote_proposal_version,production_lead_time_days,shipping_included,commercial_notes) VALUES($1,$2,$3,'pending_payment',$4,$5,nullif($6,''),$7,0,0,$7,$8,now(),$9,$10,$11,$12,nullif($13,'')) RETURNING id`, orderNumber, quoteID, user, name, email, phone, price, notes, proposalID, version, lead, shippingIncluded, commercialNotes).Scan(&orderID)
+	if err != nil {
+		return domain.OrderResult{}, err
+	}
+	unitPrice := price / int64(quantity)
+	_, err = tx.Exec(ctx, `INSERT INTO order_items(order_id,item_type,product_name,description_snapshot,material_name,color_name,dimensions_snapshot,quantity,unit_price_cents,approved_total_cents) VALUES($1,'custom','Impressão 3D personalizada',$2,$3,$4,nullif($5,''),$6,$7,$8)`, orderID, "Serviço personalizado do orçamento "+ref+" — proposta v"+strconv.Itoa(version), material, color, dimensions, quantity, unitPrice, price)
+	if err != nil {
+		return domain.OrderResult{}, err
+	}
+	metadata := map[string]any{"quote_reference": ref, "proposal_id": proposalID, "proposal_version": version, "customer_user_id": user}
+	raw, _ := json.Marshal(metadata)
+	_, err = tx.Exec(ctx, `INSERT INTO order_status_events(order_id,status,description,created_by_user_id,metadata) VALUES($1,'pending_payment','Pedido criado a partir de proposta aprovada',$2,$3)`, orderID, user, raw)
+	if err != nil {
+		return domain.OrderResult{}, err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO customer_audit_events(user_id,session_id,action,resource_type,resource_id,outcome,metadata) VALUES($1,$2,'quote.convert','order',$3,'success',$4)`, user, session, orderNumber, raw)
+	if err != nil {
+		return domain.OrderResult{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return domain.OrderResult{}, err
+	}
+	return domain.OrderResult{Reference: orderNumber, Status: "pending_payment"}, nil
 }

@@ -34,6 +34,9 @@ func (*fakeRepository) GetQuote(context.Context, string, string) (domain.QuoteDe
 func (*fakeRepository) Decide(context.Context, string, string, string, string, string) error {
 	return nil
 }
+func (*fakeRepository) ConvertQuote(context.Context, string, string, string) (domain.OrderResult, error) {
+	return domain.OrderResult{}, nil
+}
 
 type failingMailer struct{}
 

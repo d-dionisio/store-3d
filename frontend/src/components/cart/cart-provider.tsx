@@ -10,6 +10,7 @@ type CartContextValue = {
   addItem: (item: CartItem) => void;
   updateQuantity: (variantId: string, quantity: number) => void;
   removeItem: (variantId: string) => void;
+  clear: () => void;
 };
 
 const CartContext = createContext<CartContextValue | null>(null);
@@ -23,7 +24,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     let storedItems: CartItem[] = [];
     try {
       const stored = window.localStorage.getItem(storageKey);
-      if (stored) { const parsed: unknown = JSON.parse(stored); if (Array.isArray(parsed)) storedItems = parsed.filter((item): item is CartItem => typeof item === "object" && item !== null && "productVariantId" in item && "productSlug" in item); }
+      if (stored) { const parsed: unknown = JSON.parse(stored); if (Array.isArray(parsed)) storedItems = parsed.filter((item): item is CartItem => typeof item === "object" && item !== null && "productVariantId" in item && "quantity" in item); }
     } catch { /* Invalid demo storage is ignored. */ }
     const timer = window.setTimeout(() => {
       setItems(storedItems);
@@ -33,7 +34,7 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (ready) window.localStorage.setItem(storageKey, JSON.stringify(items));
+    if (ready) window.localStorage.setItem(storageKey, JSON.stringify(items.map(({productVariantId,quantity})=>({productVariantId,quantity}))));
   }, [items, ready]);
 
   const addItem = useCallback((item: CartItem) => {
@@ -53,7 +54,9 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
     setItems((current) => current.filter((item) => item.productVariantId !== variantId));
   }, []);
 
-  const value = useMemo(() => ({ items, ready, addItem, updateQuantity, removeItem, count: items.reduce((sum, item) => sum + item.quantity, 0) }), [items, ready, addItem, updateQuantity, removeItem]);
+  const clear = useCallback(()=>setItems([]),[]);
+
+  const value = useMemo(() => ({ items, ready, addItem, updateQuantity, removeItem, clear, count: items.reduce((sum, item) => sum + item.quantity, 0) }), [items, ready, addItem, updateQuantity, removeItem, clear]);
   return <CartContext.Provider value={value}>{children}</CartContext.Provider>;
 }
 

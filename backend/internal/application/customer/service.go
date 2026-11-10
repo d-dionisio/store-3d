@@ -19,6 +19,9 @@ var ErrInvalidDecision = errors.New("invalid decision")
 var ErrRateLimited = errors.New("rate limited")
 var ErrForbidden = errors.New("forbidden")
 var ErrInvalidConversion = errors.New("invalid quote conversion")
+var ErrInvalidCart = errors.New("invalid cart")
+var ErrInsufficientStock = errors.New("insufficient stock")
+var ErrShippingRequired = errors.New("shipping quote required")
 
 type Repository interface {
 	CreateMagicLink(context.Context, string, string, string, time.Time) error
@@ -30,6 +33,14 @@ type Repository interface {
 	GetQuote(context.Context, string, string) (domain.QuoteDetail, error)
 	Decide(context.Context, string, string, string, string, string) error
 	ConvertQuote(context.Context, string, string, string) (domain.OrderResult, error)
+	ValidateCart(context.Context, []domain.CartInput) (domain.Cart, error)
+	CreateCatalogOrder(context.Context, string, string, string, []domain.CartInput, string) (domain.OrderResult, error)
+	ListAddresses(context.Context, string) ([]domain.Address, error)
+	CreateAddress(context.Context, string, domain.Address) (domain.Address, error)
+	UpdateOrderAddress(context.Context, string, string, string) error
+	PrepareOrder(context.Context, string, string) (domain.OrderResult, error)
+	ListOrders(context.Context, string) ([]domain.OrderSummary, error)
+	GetOrder(context.Context, string, string) (domain.OrderDetail, error)
 }
 type Mailer interface {
 	SendMagicLink(context.Context, string, string) error
@@ -113,4 +124,31 @@ func (s *Service) Logout(ctx context.Context, v domain.Session) error {
 }
 func (s *Service) ConvertQuote(ctx context.Context, v domain.Session, ref string) (domain.OrderResult, error) {
 	return s.repo.ConvertQuote(ctx, v.UserID, ref, v.ID)
+}
+func (s *Service) ValidateCart(ctx context.Context, items []domain.CartInput) (domain.Cart, error) {
+	return s.repo.ValidateCart(ctx, items)
+}
+func (s *Service) CreateCatalogOrder(ctx context.Context, v domain.Session, key, address string, items []domain.CartInput) (domain.OrderResult, error) {
+	if strings.TrimSpace(key) == "" {
+		return domain.OrderResult{}, ErrInvalidCart
+	}
+	return s.repo.CreateCatalogOrder(ctx, v.UserID, v.ID, Hash(key), items, address)
+}
+func (s *Service) ListAddresses(ctx context.Context, v domain.Session) ([]domain.Address, error) {
+	return s.repo.ListAddresses(ctx, v.UserID)
+}
+func (s *Service) CreateAddress(ctx context.Context, v domain.Session, a domain.Address) (domain.Address, error) {
+	return s.repo.CreateAddress(ctx, v.UserID, a)
+}
+func (s *Service) UpdateOrderAddress(ctx context.Context, v domain.Session, ref, address string) error {
+	return s.repo.UpdateOrderAddress(ctx, v.UserID, ref, address)
+}
+func (s *Service) PrepareOrder(ctx context.Context, v domain.Session, ref string) (domain.OrderResult, error) {
+	return s.repo.PrepareOrder(ctx, v.UserID, ref)
+}
+func (s *Service) ListOrders(ctx context.Context, v domain.Session) ([]domain.OrderSummary, error) {
+	return s.repo.ListOrders(ctx, v.UserID)
+}
+func (s *Service) GetOrder(ctx context.Context, v domain.Session, ref string) (domain.OrderDetail, error) {
+	return s.repo.GetOrder(ctx, v.UserID, ref)
 }

@@ -334,3 +334,14 @@ Ainda não foram implementados:
 - Material, cor, dimensões, descrição, cliente, telefone, preço e quantidade são copiados no momento da conversão e não dependem de consultas futuras ao catálogo.
 - Pedido, item, evento inicial e auditoria do cliente são gravados na mesma transação. Qualquer falha provoca rollback integral.
 
+## Checkout e fechamento de compras (Etapa 8.2)
+
+- O armazenamento local do carrinho contém somente `productVariantId` e quantidade. Preço, nome, SKU, atributos e disponibilidade são reconsultados no PostgreSQL.
+- O checkout de catálogo bloqueia as variantes durante a criação do pedido, valida produto, variante e atributos ativos, disponibilidade e limite de quantidade, e grava snapshots dos itens.
+- `orders.checkout_key_hash` guarda somente SHA-256 da chave de idempotência. Um advisory lock por chave e o índice único impedem pedidos duplicados em requisições concorrentes.
+- `order_addresses` é o snapshot de entrega. Alterações posteriores em `addresses` não modificam pedidos existentes.
+- `payment_readiness` distingue `awaiting_address`, `awaiting_shipping_quote` e `ready`. O status comercial continua `pending_payment`.
+- Produtos físicos exigem frete. Pedidos personalizados também exigem frete quando `shipping_included=false`. Sem `order_shipping` real, `PrepareOrderForPayment` retorna `shipping_required` e não inventa preço.
+- O contrato futuro de Melhor Envio utiliza as tabelas existentes `shipping_quotes` e `order_shipping`; a Etapa 8.2 não cria cotações simuladas.
+- A criação do pedido, itens, endereço, histórico e auditoria ocorre numa única transação. Não há captura de pagamento, produção nem reserva definitiva de estoque.
+

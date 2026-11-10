@@ -277,3 +277,17 @@ Resposta inicial ou idempotente:
 
 O pedido apenas registra a obrigação comercial aprovada. Checkout, pagamento, frete, estoque e produção não são iniciados nesta etapa. A estrutura necessária é aplicada pela migration `000013_add_quote_order_snapshots`.
 
+## Checkout
+
+O checkout de catálogo revalida o carrinho no backend e aceita somente IDs de variantes e quantidades. Endpoints principais:
+
+- `POST /api/v1/customer/cart/validate`
+- `GET|POST /api/v1/customer/addresses`
+- `POST /api/v1/customer/orders/catalog`
+- `PUT /api/v1/customer/orders/{reference}/delivery-address`
+- `POST /api/v1/customer/orders/{reference}/prepare-payment`
+- `GET /api/v1/customer/orders`
+- `GET /api/v1/customer/orders/{reference}`
+
+`POST /orders/catalog` exige `Idempotency-Key`, sessão do cliente e CSRF. Pedidos que precisam de frete permanecem em `awaiting_shipping_quote`; nenhum preço de entrega é simulado. As páginas ficam em `/checkout`, `/checkout/confirmacao`, `/minha-conta/pedidos` e `/minha-conta/pedidos/{reference}`.
+

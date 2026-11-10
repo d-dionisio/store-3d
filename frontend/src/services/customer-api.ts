@@ -11,3 +11,14 @@ export async function customerQuotes(cookie?:string){return call<CustomerQuote[]
 export async function customerQuote(reference:string,cookie?:string){return call<CustomerDetail>(`/quotes/${encodeURIComponent(reference)}`,{headers:cookie?{Cookie:cookie}:undefined})}
 export async function decide(reference:string,proposalId:string,decision:string){const csrf=sessionStorage.getItem("loja3d_customer_csrf")||"";return call<void>(`/quotes/${encodeURIComponent(reference)}/decision`,{method:"POST",headers:{"X-CSRF-Token":csrf},body:JSON.stringify({proposal_id:proposalId,decision})})}
 export async function convertQuote(reference:string){const csrf=sessionStorage.getItem("loja3d_customer_csrf")||"";return call<{reference:string;status:string}>(`/quotes/${encodeURIComponent(reference)}/convert`,{method:"POST",headers:{"X-CSRF-Token":csrf}})}
+export type CartInput={variant_id:string;quantity:number};
+export type CartLine={VariantID:string;ProductName:string;SKU:string;Material:string;Color:string;Quantity:number;AvailableQuantity:number;UnitPriceCents:number;LineTotalCents:number};
+export type ValidatedCart={Items:CartLine[];SubtotalCents:number};
+export type CustomerAddress={ID:string;RecipientName:string;PostalCode:string;Street:string;Number:string;Complement:string;District:string;City:string;StateCode:string;CountryCode:string;IsDefault:boolean};
+export async function validateCart(items:CartInput[]){return call<ValidatedCart>("/cart/validate",{method:"POST",body:JSON.stringify({items})})}
+export async function listAddresses(){return call<CustomerAddress[]>("/addresses")}
+export async function createAddress(address:Omit<CustomerAddress,"ID">){const csrf=sessionStorage.getItem("loja3d_customer_csrf")||"";return call<CustomerAddress>("/addresses",{method:"POST",headers:{"X-CSRF-Token":csrf},body:JSON.stringify(address)})}
+export async function createCatalogOrder(items:CartInput[],addressId:string,key:string){const csrf=sessionStorage.getItem("loja3d_customer_csrf")||"";return call<{reference:string;status:string}>("/orders/catalog",{method:"POST",headers:{"X-CSRF-Token":csrf,"Idempotency-Key":key},body:JSON.stringify({items,address_id:addressId})})}
+export type CustomerOrder={Reference:string;Status:string;PaymentReadiness:string;TotalCents:number;CreatedAt:string};
+export async function listOrders(cookie?:string){return call<CustomerOrder[]>("/orders",{headers:cookie?{Cookie:cookie}:undefined})}
+export async function getOrder(reference:string,cookie?:string){return call<CustomerOrder&{Items:CartLine[];Address:CustomerAddress|null;ShippingRequired:boolean}>(`/orders/${encodeURIComponent(reference)}`,{headers:cookie?{Cookie:cookie}:undefined})}

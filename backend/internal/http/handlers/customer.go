@@ -31,6 +31,12 @@ func customerError(w http.ResponseWriter, e error) {
 		writeQuoteJSON(w, 409, map[string]any{"error": map[string]string{"code": "invalid_decision", "message": "A proposta não pode mais ser decidida."}})
 	case errors.Is(e, app.ErrInvalidConversion):
 		writeQuoteJSON(w, 409, map[string]any{"error": map[string]string{"code": "invalid_conversion", "message": "O orçamento não pode ser convertido em pedido."}})
+	case errors.Is(e, app.ErrInvalidCart):
+		writeQuoteJSON(w, 400, map[string]any{"error": map[string]string{"code": "invalid_cart", "message": "Carrinho ou endereço inválido."}})
+	case errors.Is(e, app.ErrInsufficientStock):
+		writeQuoteJSON(w, 409, map[string]any{"error": map[string]string{"code": "insufficient_stock", "message": "Estoque insuficiente."}})
+	case errors.Is(e, app.ErrShippingRequired):
+		writeQuoteJSON(w, 409, map[string]any{"error": map[string]string{"code": "shipping_required", "message": "A cotação de frete ainda é obrigatória."}})
 	default:
 		writeQuoteJSON(w, 500, map[string]any{"error": map[string]string{"code": "internal_error", "message": "Falha interna."}})
 	}
@@ -171,4 +177,156 @@ func (h *CustomerHandler) Convert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeQuoteJSON(w, http.StatusOK, map[string]any{"data": map[string]string{"reference": result.Reference, "status": result.Status}})
+}
+
+type cartRequest struct {
+	Items []struct {
+		VariantID string `json:"variant_id"`
+		Quantity  int    `json:"quantity"`
+	} `json:"items"`
+	AddressID string `json:"address_id"`
+}
+
+func cartInputs(v cartRequest) []domain.CartInput {
+	out := make([]domain.CartInput, 0, len(v.Items))
+	for _, i := range v.Items {
+		out = append(out, domain.CartInput{VariantID: i.VariantID, Quantity: i.Quantity})
+	}
+	return out
+}
+func (h *CustomerHandler) ValidateCart(w http.ResponseWriter, r *http.Request) {
+	var body cartRequest
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 32768)).Decode(&body) != nil {
+		customerError(w, app.ErrInvalidCart)
+		return
+	}
+	result, e := h.service.ValidateCart(r.Context(), cartInputs(body))
+	if e != nil {
+		customerError(w, e)
+		return
+	}
+	writeQuoteJSON(w, 200, map[string]any{"data": result})
+}
+func (h *CustomerHandler) CreateCatalogOrder(w http.ResponseWriter, r *http.Request) {
+	s, e := h.session(r)
+	if e != nil {
+		customerError(w, e)
+		return
+	}
+	if !app.CSRF(r.Header.Get("X-CSRF-Token"), s.CSRFHash) {
+		customerError(w, app.ErrForbidden)
+		return
+	}
+	var body cartRequest
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 32768)).Decode(&body) != nil {
+		customerError(w, app.ErrInvalidCart)
+		return
+	}
+	result, e := h.service.CreateCatalogOrder(r.Context(), s, r.Header.Get("Idempotency-Key"), body.AddressID, cartInputs(body))
+	if e != nil {
+		customerError(w, e)
+		return
+	}
+	writeQuoteJSON(w, 201, map[string]any{"data": map[string]string{"reference": result.Reference, "status": result.Status}})
+}
+func (h *CustomerHandler) ListAddresses(w http.ResponseWriter, r *http.Request) {
+	s, e := h.session(r)
+	if e != nil {
+		customerError(w, e)
+		return
+	}
+	result, e := h.service.ListAddresses(r.Context(), s)
+	if e != nil {
+		customerError(w, e)
+		return
+	}
+	writeQuoteJSON(w, 200, map[string]any{"data": result})
+}
+func (h *CustomerHandler) CreateAddress(w http.ResponseWriter, r *http.Request) {
+	s, e := h.session(r)
+	if e != nil {
+		customerError(w, e)
+		return
+	}
+	if !app.CSRF(r.Header.Get("X-CSRF-Token"), s.CSRFHash) {
+		customerError(w, app.ErrForbidden)
+		return
+	}
+	var body domain.Address
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 16384)).Decode(&body) != nil {
+		customerError(w, app.ErrInvalidCart)
+		return
+	}
+	result, e := h.service.CreateAddress(r.Context(), s, body)
+	if e != nil {
+		customerError(w, app.ErrInvalidCart)
+		return
+	}
+	writeQuoteJSON(w, 201, map[string]any{"data": result})
+}
+func (h *CustomerHandler) UpdateOrderAddress(w http.ResponseWriter, r *http.Request) {
+	s, e := h.session(r)
+	if e != nil {
+		customerError(w, e)
+		return
+	}
+	if !app.CSRF(r.Header.Get("X-CSRF-Token"), s.CSRFHash) {
+		customerError(w, app.ErrForbidden)
+		return
+	}
+	var body struct {
+		AddressID string `json:"address_id"`
+	}
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body) != nil {
+		customerError(w, app.ErrInvalidCart)
+		return
+	}
+	if e = h.service.UpdateOrderAddress(r.Context(), s, r.PathValue("reference"), body.AddressID); e != nil {
+		customerError(w, e)
+		return
+	}
+	w.WriteHeader(204)
+}
+func (h *CustomerHandler) PrepareOrder(w http.ResponseWriter, r *http.Request) {
+	s, e := h.session(r)
+	if e != nil {
+		customerError(w, e)
+		return
+	}
+	if !app.CSRF(r.Header.Get("X-CSRF-Token"), s.CSRFHash) {
+		customerError(w, app.ErrForbidden)
+		return
+	}
+	result, e := h.service.PrepareOrder(r.Context(), s, r.PathValue("reference"))
+	if e != nil {
+		customerError(w, e)
+		return
+	}
+	writeQuoteJSON(w, 200, map[string]any{"data": result})
+}
+func (h *CustomerHandler) ListOrders(w http.ResponseWriter, r *http.Request) {
+	s, e := h.session(r)
+	if e != nil {
+		customerError(w, e)
+		return
+	}
+	result, e := h.service.ListOrders(r.Context(), s)
+	if e != nil {
+		customerError(w, e)
+		return
+	}
+	writeQuoteJSON(w, 200, map[string]any{"data": result})
+}
+func (h *CustomerHandler) GetOrder(w http.ResponseWriter, r *http.Request) {
+	s, e := h.session(r)
+	if e != nil {
+		customerError(w, e)
+		return
+	}
+	result, e := h.service.GetOrder(r.Context(), s, r.PathValue("reference"))
+	if e != nil {
+		customerError(w, e)
+		return
+	}
+	writeQuoteJSON(w, 200, map[string]any{"data": result})
 }

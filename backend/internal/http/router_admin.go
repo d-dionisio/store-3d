@@ -55,6 +55,14 @@ func newHandler(frontendOrigin string, readiness handlers.ReadinessChecker, cata
 		router.HandleFunc("GET /api/v1/customer/quotes/{reference}", customer.Get)
 		router.HandleFunc("POST /api/v1/customer/quotes/{reference}/decision", customer.Decide)
 		router.HandleFunc("POST /api/v1/customer/quotes/{reference}/convert", customer.Convert)
+		router.HandleFunc("POST /api/v1/customer/cart/validate", customer.ValidateCart)
+		router.HandleFunc("POST /api/v1/customer/orders/catalog", customer.CreateCatalogOrder)
+		router.HandleFunc("GET /api/v1/customer/addresses", customer.ListAddresses)
+		router.HandleFunc("POST /api/v1/customer/addresses", customer.CreateAddress)
+		router.HandleFunc("PUT /api/v1/customer/orders/{reference}/delivery-address", customer.UpdateOrderAddress)
+		router.HandleFunc("POST /api/v1/customer/orders/{reference}/prepare-payment", customer.PrepareOrder)
+		router.HandleFunc("GET /api/v1/customer/orders", customer.ListOrders)
+		router.HandleFunc("GET /api/v1/customer/orders/{reference}", customer.GetOrder)
 	}
 	return middleware.CORS(frontendOrigin)(router)
 }

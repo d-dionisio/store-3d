@@ -37,6 +37,28 @@ func (*fakeRepository) Decide(context.Context, string, string, string, string, s
 func (*fakeRepository) ConvertQuote(context.Context, string, string, string) (domain.OrderResult, error) {
 	return domain.OrderResult{}, nil
 }
+func (*fakeRepository) ValidateCart(context.Context, []domain.CartInput) (domain.Cart, error) {
+	return domain.Cart{}, nil
+}
+func (*fakeRepository) CreateCatalogOrder(context.Context, string, string, string, []domain.CartInput, string) (domain.OrderResult, error) {
+	return domain.OrderResult{}, nil
+}
+func (*fakeRepository) ListAddresses(context.Context, string) ([]domain.Address, error) {
+	return nil, nil
+}
+func (*fakeRepository) CreateAddress(_ context.Context, _ string, a domain.Address) (domain.Address, error) {
+	return a, nil
+}
+func (*fakeRepository) UpdateOrderAddress(context.Context, string, string, string) error { return nil }
+func (*fakeRepository) PrepareOrder(context.Context, string, string) (domain.OrderResult, error) {
+	return domain.OrderResult{}, nil
+}
+func (*fakeRepository) ListOrders(context.Context, string) ([]domain.OrderSummary, error) {
+	return nil, nil
+}
+func (*fakeRepository) GetOrder(context.Context, string, string) (domain.OrderDetail, error) {
+	return domain.OrderDetail{}, nil
+}
 
 type failingMailer struct{}
 

@@ -402,3 +402,10 @@ Ainda não foram implementados:
 - Carrinho, checkout, frete, PIX, cartão e área do cliente recebem apenas estilos; seus contratos e regras permanecem inalterados.
 - O painel administrativo conserva o tema Dark Tech, mantendo separação contextual entre operação e storefront.
 
+## Etapa 9.3.1 — catálogo digital interativo
+
+- `/catalogo` deriva suas edições diretamente das categorias públicas; `/catalogo/[slug]` pagina toda a consulta de produtos ativos e comercializáveis daquela categoria. Não há entidade, migration ou cópia comercial específica de catálogo.
+- O Server Component carrega conteúdo e metadados Open Graph. O Client Component fica restrito à navegação, teclado e compartilhamento; preço permanece em centavos até a formatação.
+- A virada usa CSS 3D e APIs nativas, sem dependência de flipbook. Em telas menores que 900 px o documento vira uma leitura vertical integral; `prefers-reduced-motion` elimina a animação sem ocultar conteúdo.
+- URLs de compartilhamento usam a localização atual no navegador. `SITE_URL` define a base canônica dos metadados no servidor e deve apontar para o domínio público em produção.
+

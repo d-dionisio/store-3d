@@ -55,7 +55,9 @@ Um teste integrado adicional criou uma Order real aprovada, persistiu a tentativ
 
 A validação HMAC, a persistência, a consulta autenticada, a deduplicação e a atualização transacional foram executadas com gatilho assinado localmente. Isso não é evidência de entrega real pela internet.
 
-A entrega HTTPS real não foi executada. Foi criado um proxy local de allowlist que expõe somente o POST do webhook, documentado em `docs/mercado-pago-webhook-proxy.md`; nenhum túnel foi iniciado nesta etapa.
+Em 11 de novembro de 2026, o Mercado Pago tentou entregar pela internet uma notificação sandbox real `order.processed` para a URL HTTPS configurada. A borda respondeu HTTP 502. No diagnóstico posterior, a API respondia HTTP 200 em `127.0.0.1:8080`, mas não existia listener em `127.0.0.1:8090` nem interface local do ngrok em `127.0.0.1:4040`. Portanto, essa evidência comprova a tentativa externa até a URL pública, mas **não** comprova chegada ao proxy, validação HMAC, consulta autenticada, deduplicação ou atualização do pedido.
+
+Foi criado um proxy local de allowlist que expõe somente o POST do webhook, documentado em `docs/mercado-pago-webhook-proxy.md`. Uma nova entrega precisa ser executada com API, proxy e túnel ativos simultaneamente.
 
 ### Navegador
 

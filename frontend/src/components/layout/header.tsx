@@ -9,7 +9,7 @@ import { useCart } from "@/components/cart/cart-provider";
 const links = [
   ["Início", "/"],
   ["Decoração", "/produtos?category=decoracao"],
-  ["Coleções", "/produtos"],
+  ["Catálogos", "/catalogo"],
   ["Personalizados", "/personalizados"],
   ["Sobre nós", "/sobre"],
 ];

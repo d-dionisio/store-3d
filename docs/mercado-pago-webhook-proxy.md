@@ -28,6 +28,8 @@ O HTTPS termina no provedor do túnel. O salto do proxy para a API permanece exc
    go run ./cmd/webhook-proxy
    ```
 
+   Mantenha esse processo aberto. Antes de iniciar o túnel, confirme que existe um listener em `127.0.0.1:8090`. Um túnel apontado para a porta sem esse processo retorna HTTP 502 antes de alcançar a API.
+
 3. Confirme que uma rota privada está bloqueada:
 
    ```powershell

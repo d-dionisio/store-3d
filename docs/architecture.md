@@ -382,3 +382,14 @@ Ainda não foram implementados:
 - Uma obrigação aberta impede criar outra modalidade no mesmo pedido. Trocar PIX por cartão após gerar cobrança exige cancelamento ou expiração explícita, evitando cobranças simultâneas.
 - O Card Payment Brick obtém do provedor as condições de parcelamento para o total atual; a loja não inventa parcelas.
 
+## Etapa 9 — storefront Editorial Luxury
+
+- A marca pública passa a ser Lumé Studio. A mudança é de apresentação; módulos, banco, APIs e referências de pedido permanecem estáveis.
+- Cormorant Garamond atende títulos editoriais e Inter atende navegação, formulários e dados transacionais. Ambas usam `next/font`.
+- O header é um Client Component isolado por depender de rolagem, rota e menu; as páginas continuam Server Components sempre que possível.
+- Na homepage o header começa transparente sobre o hero e ganha superfície translúcida após rolagem. Nas páginas internas nasce sólido para preservar contraste.
+- O menu mobile bloqueia rolagem, fecha com Escape, restaura foco e mantém foco contido enquanto aberto.
+- Coleções são construídas exclusivamente com categorias retornadas pela API. O mosaico local é tratamento visual e não cria entidades fictícias.
+- Carrinho, checkout, frete, PIX, cartão e área do cliente recebem apenas estilos; seus contratos e regras permanecem inalterados.
+- O painel administrativo conserva o tema Dark Tech, mantendo separação contextual entre operação e storefront.
+

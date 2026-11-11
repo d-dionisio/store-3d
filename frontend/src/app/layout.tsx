@@ -1,18 +1,22 @@
 import type { Metadata } from "next";
+import { Cormorant_Garamond, Inter } from "next/font/google";
 import { CartProvider } from "@/components/cart/cart-provider";
 import "./globals.css";
 
+const editorial = Cormorant_Garamond({ subsets: ["latin"], variable: "--font-editorial", display: "swap", weight: ["400", "500", "600"] });
+const sans = Inter({ subsets: ["latin"], variable: "--font-sans", display: "swap" });
+
 export const metadata: Metadata = {
   metadataBase: new URL("http://localhost:3000"),
-  title: { default: "Loja 3D — Design que ganha forma", template: "%s | Loja 3D" },
-  description: "Objetos autorais e impressão 3D personalizada, produzidos sob demanda.",
-  openGraph: { title: "Loja 3D", description: "Design que ganha forma, camada por camada.", type: "website", locale: "pt_BR" },
+  title: { default: "Lumé Studio — Objetos autorais", template: "%s | Lumé Studio" },
+  description: "Objetos autorais que transformam espaços em expressões de personalidade.",
+  openGraph: { title: "Lumé Studio", description: "O belo ganha forma.", type: "website", locale: "pt_BR" },
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="pt-BR">
-      <body><CartProvider>{children}</CartProvider></body>
+      <body className={`${editorial.variable} ${sans.variable}`}><CartProvider>{children}</CartProvider></body>
     </html>
   );
 }

@@ -1,6 +1,12 @@
 # Loja 3D
 
-Frontend Hybrid Premium para uma plataforma de impressão 3D, integrado à API Go e ao catálogo PostgreSQL. Orçamento, checkout e acompanhamento de pedido ainda são demonstrativos e não executam operações comerciais reais.
+Storefront Lumé Studio para uma plataforma de objetos autorais produzidos por impressão 3D, integrado à API Go e ao catálogo PostgreSQL.
+
+## Identidade Lumé Studio
+
+O storefront público utiliza a linguagem **Editorial Luxury**: Cormorant Garamond e Inter via `next/font`, paleta marfim/grafite/dourado discreto, header transparente sobre a homepage e superfícies sólidas nas rotas internas. O painel administrativo mantém sua identidade Dark Tech independente.
+
+Os assets editoriais são locais em `frontend/public/images`, evitando dependência de imagens remotas. O redesign não altera contratos da API, autenticação, carrinho, frete ou pagamentos.
 
 ## Pré-requisitos
 

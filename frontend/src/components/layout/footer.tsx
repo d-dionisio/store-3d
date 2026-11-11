@@ -1,17 +1,13 @@
 import Link from "next/link";
-import { Box, Camera, Mail } from "lucide-react";
 
 export function Footer() {
-  return (
-    <footer className="footer">
-      <div className="container footer-grid">
-        <div><div className="logo light"><span>3D</span> LOJA</div><p>Design que ganha forma, camada por camada.</p></div>
-        <div><h2>Descubra</h2><Link href="/produtos">Produtos</Link><Link href="/personalizados">Personalizados</Link><Link href="/sobre">Sobre</Link></div>
-        <div><h2>Ajuda</h2><Link href="/acompanhar-pedido">Acompanhar pedido</Link><Link href="/carrinho">Carrinho</Link><Link href="/checkout">Checkout protótipo</Link></div>
-        <div><h2>Contato</h2><span><Mail size={16} /> contato@loja3d.local</span><span><Camera size={16} /> @loja3d</span><span><Box size={16} /> Produção sob demanda</span></div>
-      </div>
-      <div className="container footer-bottom"><span>© 2026 Loja 3D. Protótipo demonstrativo.</span><span>Feito com precisão no Brasil.</span></div>
-    </footer>
-  );
+  return <footer className="footer editorial-footer">
+    <div className="container footer-intro"><div className="footer-wordmark">LUMÉ</div><p>Objetos autorais que unem tecnologia, matéria e sensibilidade para transformar espaços.</p></div>
+    <div className="container footer-grid">
+      <div><h2>Studio</h2><Link href="/sobre">Sobre nós</Link><Link href="/personalizados">Peças personalizadas</Link></div>
+      <div><h2>Descubra</h2><Link href="/produtos">Todas as peças</Link><Link href="/produtos?category=decoracao">Decoração</Link><Link href="/produtos?category=natal">Coleções</Link></div>
+      <div><h2>Sua experiência</h2><Link href="/minha-conta">Minha conta</Link><Link href="/minha-conta/pedidos">Meus pedidos</Link><Link href="/acompanhar-pedido">Acompanhar pedido</Link></div>
+    </div>
+    <div className="container footer-bottom"><span>© 2026 Lumé Studio.</span><span>Design autoral · Produção sob demanda no Brasil</span></div>
+  </footer>;
 }
-

@@ -13,66 +13,125 @@ import (
 	"time"
 )
 
-func TestCreatePIX(t *testing.T) {
+const pendingOrder = `{"id":"ORD01TEST","status":"action_required","status_detail":"waiting_transfer","country_code":"BRA","external_reference":"PED-1","total_amount":"25.90","last_updated_date":"2026-11-11T12:00:00.123Z","transactions":{"payments":[{"id":"PAY01TEST","status":"action_required","status_detail":"waiting_transfer","amount":"25.90","payment_method":{"id":"pix","type":"bank_transfer","qr_code":"000201","qr_code_base64":"abc","ticket_url":"https://example.test/ticket"}}]}}`
+
+func TestCreatePIXWithOrdersAPI(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1/payments" || r.Header.Get("Authorization") != "Bearer test-token" || r.Header.Get("X-Idempotency-Key") != "idem-1" {
-			t.Fatalf("unexpected request")
+		if r.URL.Path != "/v1/orders" || r.Header.Get("Authorization") != "Bearer test-token" || r.Header.Get("X-Idempotency-Key") != "idem-1" {
+			t.Fatalf("unexpected request: %s", r.URL.Path)
 		}
-		var body map[string]any
-		if json.NewDecoder(r.Body).Decode(&body) != nil || body["payment_method_id"] != "pix" || body["external_reference"] != "PED-1" {
-			t.Fatalf("body=%v", body)
+		var body struct {
+			Type              string `json:"type"`
+			TotalAmount       string `json:"total_amount"`
+			ExternalReference string `json:"external_reference"`
+			ProcessingMode    string `json:"processing_mode"`
+			Payer             struct {
+				Email string `json:"email"`
+			} `json:"payer"`
+			Transactions struct {
+				Payments []struct {
+					Amount         string `json:"amount"`
+					ExpirationTime string `json:"expiration_time"`
+					PaymentMethod  struct {
+						ID   string `json:"id"`
+						Type string `json:"type"`
+					} `json:"payment_method"`
+				} `json:"payments"`
+			} `json:"transactions"`
+		}
+		if json.NewDecoder(r.Body).Decode(&body) != nil || body.Type != "online" || body.TotalAmount != "25.90" || body.ExternalReference != "PED-1" || body.ProcessingMode != "automatic" || body.Payer.Email != "buyer@example.com" {
+			t.Fatalf("body=%+v", body)
+		}
+		payment := body.Transactions.Payments[0]
+		if payment.Amount != "25.90" || payment.ExpirationTime != "PT30M" || payment.PaymentMethod.ID != "pix" || payment.PaymentMethod.Type != "bank_transfer" {
+			t.Fatalf("payment=%+v", payment)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":123,"status":"pending","status_detail":"pending_waiting_transfer","currency_id":"BRL","external_reference":"PED-1","transaction_amount":25.9,"date_of_expiration":"2026-11-11T12:00:00-03:00","point_of_interaction":{"transaction_data":{"qr_code":"000201","qr_code_base64":"abc","ticket_url":"https://example.test/ticket"}}}`))
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(pendingOrder))
 	}))
 	defer srv.Close()
 	c, e := New(srv.URL, "test-token", "secret", srv.Client())
 	if e != nil {
 		t.Fatal(e)
 	}
-	p, e := c.CreatePIX(context.Background(), domain.CreateRequest{IdempotencyKey: "idem-1", OrderReference: "PED-1", PayerEmail: "buyer@example.com", AmountCents: 2590, ExpiresAt: time.Now().Add(time.Hour)})
-	if e != nil || p.ID != "123" || p.AmountCents != 2590 || p.QRCode != "000201" {
+	p, e := c.CreatePIX(context.Background(), domain.CreateRequest{IdempotencyKey: "idem-1", OrderReference: "PED-1", PayerEmail: "buyer@example.com", AmountCents: 2590, ExpiresAt: time.Now().Add(30 * time.Minute)})
+	if e != nil || p.ID != "ORD01TEST" || p.Status != "pending" || p.Currency != "BRL" || p.AmountCents != 2590 || p.QRCode != "000201" {
 		t.Fatalf("payment=%+v err=%v", p, e)
 	}
 }
-func TestGetPaymentAndProviderFailure(t *testing.T) {
+
+func TestGetOrderAndStatusMapping(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/payments/456" {
-			_, _ = w.Write([]byte(`{"id":456,"status":"approved","status_detail":"accredited","currency_id":"BRL","external_reference":"PED-2","transaction_amount":10}`))
+		if r.URL.Path != "/v1/orders/ORD01APPROVED" {
+			http.Error(w, "down", http.StatusServiceUnavailable)
 			return
 		}
-		http.Error(w, "down", 503)
+		_, _ = w.Write([]byte(`{"id":"ORD01APPROVED","status":"processed","status_detail":"partially_refunded","country_code":"BRA","external_reference":"PED-2","total_amount":"10.00","last_updated_date":"2026-11-11T12:00:00Z","transactions":{"payments":[{"status":"processed","status_detail":"partially_refunded","amount":"10.00","payment_method":{"id":"pix","type":"bank_transfer"}}],"refunds":[{"amount":"2.50"}]}}`))
 	}))
 	defer srv.Close()
 	c, _ := New(srv.URL, "token", "secret", srv.Client())
-	p, e := c.GetPayment(context.Background(), "456")
-	if e != nil || p.Status != "approved" {
+	p, e := c.GetPayment(context.Background(), "ORD01APPROVED")
+	if e != nil || p.Status != "approved" || p.RefundedCents != 250 || p.AmountCents != 1000 || p.ApprovedAt == nil {
 		t.Fatalf("payment=%+v err=%v", p, e)
 	}
 	if _, e = c.GetPayment(context.Background(), "invalid"); e == nil {
-		t.Fatal("expected invalid id")
+		t.Fatal("expected invalid order id")
 	}
 }
-func TestTimeout(t *testing.T) {
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { time.Sleep(50 * time.Millisecond) }))
+
+func TestProviderFailureAndTimeout(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond)
+		http.Error(w, "down", http.StatusServiceUnavailable)
+	}))
 	defer srv.Close()
 	h := srv.Client()
 	h.Timeout = 5 * time.Millisecond
 	c, _ := New(srv.URL, "token", "secret", h)
-	if _, e := c.GetPayment(context.Background(), "1"); e == nil {
+	if _, e := c.GetPayment(context.Background(), "ORD01TIMEOUT"); e == nil {
 		t.Fatal("expected timeout")
 	}
 }
+
+func TestMoneyExpirationAndStatusMapping(t *testing.T) {
+	for input, expected := range map[string]int64{`"10"`: 1000, `"10.2"`: 1020, `"10.20"`: 1020, `10.200`: 1020} {
+		got, e := parseCents(json.RawMessage(input))
+		if e != nil || got != expected {
+			t.Errorf("parseCents(%s)=%d,%v want %d", input, got, e, expected)
+		}
+	}
+	if _, e := parseCents(json.RawMessage(`"10.201"`)); e == nil {
+		t.Fatal("expected sub-cent error")
+	}
+	if got := expirationDuration(31*time.Hour + 2*time.Minute); got != "P1DT7H2M" {
+		t.Fatalf("expiration=%s", got)
+	}
+	for _, test := range []struct{ input, detail, status string }{
+		{"action_required", "waiting_transfer", "pending"},
+		{"processing", "in_process", "in_process"},
+		{"processed", "accredited", "approved"},
+		{"canceled", "expired", "cancelled"},
+		{"failed", "failed", "rejected"},
+		{"refunded", "refunded", "refunded"},
+	} {
+		status, _ := legacyStatus(test.input, test.detail)
+		if status != test.status {
+			t.Errorf("legacyStatus(%s)=%s want %s", test.input, status, test.status)
+		}
+	}
+}
+
 func TestWebhookSignature(t *testing.T) {
 	c, _ := New("https://api.mercadopago.com", "token", "secret", http.DefaultClient)
-	manifest := "id:123;request-id:req-1;ts:1700000000000;"
+	manifest := "id:ord01test;request-id:req-1;ts:1700000000000;"
 	m := hmac.New(sha256.New, []byte("secret"))
 	_, _ = m.Write([]byte(manifest))
 	signature := "ts=1700000000000,v1=" + hex.EncodeToString(m.Sum(nil))
-	if !c.ValidateWebhook(signature, "req-1", "123") {
+	if !c.ValidateWebhook(signature, "req-1", "ORD01TEST") {
 		t.Fatal("valid signature rejected")
 	}
-	if c.ValidateWebhook(signature, "req-2", "123") {
+	if c.ValidateWebhook(signature, "req-2", "ORD01TEST") {
 		t.Fatal("invalid signature accepted")
 	}
 }

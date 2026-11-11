@@ -307,7 +307,7 @@ Configure `MERCADO_PAGO_ENVIRONMENT=sandbox`, o access token e a assinatura secr
 
 - `POST /api/v1/customer/orders/{reference}/payments/pix`: cria ou recupera a tentativa PIX idempotente.
 - `GET /api/v1/customer/orders/{reference}/payment`: consulta o estado financeiro persistido.
-- `POST /api/v1/webhooks/mercado-pago?data.id={payment_id}`: recebe notificações assinadas.
+- `POST /api/v1/webhooks/mercado-pago?data.id={order_id}`: recebe notificações assinadas do tópico `order`.
 
-Cadastre a URL pública HTTPS do último endpoint no painel do Mercado Pago para o tópico de pagamentos. O webhook consulta o pagamento diretamente no provedor antes de confirmar o pedido. Sem credenciais configuradas, a API inicia normalmente e a criação de PIX retorna HTTP 503.
+Cadastre a URL pública HTTPS do último endpoint no painel do Mercado Pago para o tópico de Orders. O webhook consulta a order diretamente no provedor antes de confirmar o pedido. Sem credenciais configuradas, a API inicia normalmente e a criação de PIX retorna HTTP 503.
 

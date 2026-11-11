@@ -355,13 +355,21 @@ Ainda não foram implementados:
 
 ## Etapa 8.3 — pagamentos Mercado Pago
 
-- PIX utiliza a Payments API (`POST /v1/payments`) com `X-Idempotency-Key`; consultas e webhooks reconciliam por `GET /v1/payments/{id}`.
+- PIX utiliza a Orders API (`POST /v1/orders`) com `X-Idempotency-Key`; consultas e webhooks do tópico `order` reconciliam por `GET /v1/orders/{id}`.
 - O pedido precisa pertencer ao cliente, estar em `pending_payment`, possuir moeda BRL, total positivo e `payment_readiness=ready` antes da reserva da tentativa.
 - `payments` representa a obrigação financeira; `payment_attempts` representa uma chamada idempotente ao provedor. Apenas uma obrigação aberta é permitida por pedido.
 - O backend compara `external_reference`, moeda e valor em centavos antes de persistir ou confirmar. PIX expirado é encerrado antes de permitir nova obrigação.
-- Webhooks validam HMAC-SHA256 em tempo constante usando `x-signature`, `x-request-id` e `data.id`. O payload apenas dispara consulta autenticada ao Mercado Pago e nunca confirma um pedido diretamente.
+- Webhooks validam HMAC-SHA256 em tempo constante usando `x-signature`, `x-request-id` e `data.id`. O payload apenas dispara consulta autenticada ao Mercado Pago e nunca confirma um pedido diretamente. Quando a notificação de Order não possui um ID de evento no topo, o SHA-256 do payload assinado funciona como chave estável de deduplicação.
 - `provider_updated_at` impede regressão por eventos fora de ordem. Eventos são deduplicados, falhas podem ser reprocessadas e toda mudança gera histórico financeiro.
 - Somente `paid` confirma o pedido. Estados pending/processing/authorized não iniciam produção. Reembolsos atualizam o agregado e criam registro em `payment_refunds`.
 - Cartão permanece preparado conceitualmente por `method=card`, mas deverá usar MercadoPago.js/Card Payment Brick para tokenização; PAN, CVV e token bruto não são persistidos.
 - A criação do pedido, itens, endereço, histórico e auditoria ocorre numa única transação. Não há captura de pagamento, produção nem reserva definitiva de estoque.
+
+## Etapa 8.3.1 — validação do sandbox Mercado Pago
+
+- Evidências unitárias, com HTTP mock, PostgreSQL e sandbox real são registradas separadamente em `docs/mercado-pago-sandbox-validation.md`.
+- Access Token e assinatura de webhook exclusivos do ambiente de teste são obrigatórios; nunca devem ser enviados ao frontend ou registrados em logs.
+- Em 11 de novembro de 2026, a credencial de teste criou e consultou uma order PIX oficial pela Orders API, incluindo QR Code e ticket. O adaptador foi migrado de `/v1/payments` para `/v1/orders` e o teste opt-in do próprio client passou contra o sandbox real.
+- O request server-side da Orders API exige `payer.email`; dados adicionais de identificação não são inventados nem persistidos pelo adaptador.
+- Nenhum sucesso obtido com mock ou banco local pode ser reportado como validação do sandbox.
 

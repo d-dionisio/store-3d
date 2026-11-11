@@ -6,7 +6,7 @@ import { useState } from "react";
 import { useCart } from "@/components/cart/cart-provider";
 
 const links = [
-  ["Início", "/"], ["Produtos", "/produtos"], ["Coleções", "/produtos?categoria=Natal"], ["Personalizados", "/personalizados"], ["Sobre", "/sobre"],
+  ["Início", "/"], ["Produtos", "/produtos"], ["Coleções", "/produtos?category=natal"], ["Personalizados", "/personalizados"], ["Sobre", "/sobre"],
 ];
 
 export function Header() {

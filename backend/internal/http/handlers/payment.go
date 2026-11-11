@@ -1,11 +1,13 @@
 package handlers
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	customerapp "example.com/loja-3d/backend/internal/application/customer"
 	paymentapp "example.com/loja-3d/backend/internal/application/payment"
 	domain "example.com/loja-3d/backend/internal/domain/payment"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -108,7 +110,10 @@ func (h *PaymentHandler) Webhook(w http.ResponseWriter, r *http.Request) {
 	}
 	eventID := strings.Trim(strings.TrimSpace(string(b.ID)), "\"")
 	if eventID == "" || eventID == "null" {
-		eventID = r.Header.Get("X-Request-Id")
+		// Orders webhooks do not always include a top-level event ID. A digest of
+		// the signed payload is stable across retries, unlike X-Request-Id, and
+		// therefore preserves idempotent processing.
+		eventID = fmt.Sprintf("payload-%x", sha256.Sum256(raw))
 	}
 	eventType := b.Action
 	if eventType == "" {

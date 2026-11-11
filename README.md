@@ -311,3 +311,13 @@ Configure `MERCADO_PAGO_ENVIRONMENT=sandbox`, o access token e a assinatura secr
 
 Cadastre a URL pública HTTPS do último endpoint no painel do Mercado Pago para o tópico de Orders. O webhook consulta a order diretamente no provedor antes de confirmar o pedido. Sem credenciais configuradas, a API inicia normalmente e a criação de PIX retorna HTTP 503.
 
+## Pagamento com cartão
+
+Copie `NEXT_PUBLIC_MERCADO_PAGO_PUBLIC_KEY` para `frontend/.env.local` usando a Public Key do mesmo ambiente do Access Token. O frontend carrega o MercadoPago.js v2 oficial e o Card Payment Brick consulta as modalidades e parcelas. PAN e CVV permanecem nos Secure Fields; a API recebe somente token efêmero, método, parcelas e identificação do pagador.
+
+- `POST /api/v1/customer/orders/{reference}/payments/card`: cria a tentativa com sessão, CSRF e `Idempotency-Key`.
+- Quando o provedor exige 3DS, a resposta contém `RequiresAction` e uma URL HTTPS validada do domínio Mercado Pago.
+- O webhook de Orders continua sendo a única confirmação assíncrona que muda o pedido para confirmado.
+
+Aplique a migration 17 com `cd backend` e `go run ./cmd/migrate up`. Use Public Key e Access Token de teste da mesma aplicação e nunca coloque o Access Token em uma variável `NEXT_PUBLIC_*`.
+

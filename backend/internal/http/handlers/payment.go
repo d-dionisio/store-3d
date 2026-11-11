@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 )
 
@@ -35,9 +36,47 @@ func paymentError(w http.ResponseWriter, e error) {
 		writeQuoteJSON(w, 409, map[string]any{"error": map[string]string{"code": "payment_value_mismatch", "message": "O pagamento não corresponde ao pedido."}})
 	case errors.Is(e, paymentapp.ErrUnavailable):
 		writeQuoteJSON(w, 503, map[string]any{"error": map[string]string{"code": "payment_unavailable", "message": "O provedor de pagamentos está temporariamente indisponível."}})
+	case errors.Is(e, paymentapp.ErrInvalidInput):
+		writeQuoteJSON(w, 400, map[string]any{"error": map[string]string{"code": "invalid_payment", "message": "Os dados tokenizados do pagamento são inválidos."}})
 	default:
 		customerError(w, e)
 	}
+}
+
+var paymentMethodPattern = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
+var identificationPattern = regexp.MustCompile(`^[0-9]{5,32}$`)
+
+func (h *PaymentHandler) CreateCard(w http.ResponseWriter, r *http.Request) {
+	user, err := h.session(r, true)
+	if err != nil {
+		customerError(w, err)
+		return
+	}
+	var body struct {
+		Token                string `json:"token"`
+		PaymentMethodID      string `json:"payment_method_id"`
+		Installments         int    `json:"installments"`
+		IdentificationType   string `json:"identification_type"`
+		IdentificationNumber string `json:"identification_number"`
+	}
+	if err = json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<10)).Decode(&body); err != nil {
+		paymentError(w, paymentapp.ErrInvalidInput)
+		return
+	}
+	body.PaymentMethodID = strings.ToLower(strings.TrimSpace(body.PaymentMethodID))
+	body.IdentificationType = strings.ToUpper(strings.TrimSpace(body.IdentificationType))
+	body.IdentificationNumber = strings.TrimSpace(body.IdentificationNumber)
+	if !paymentMethodPattern.MatchString(body.PaymentMethodID) || (body.IdentificationNumber != "" && !identificationPattern.MatchString(body.IdentificationNumber)) {
+		paymentError(w, paymentapp.ErrInvalidInput)
+		return
+	}
+	input := domain.CardInput{Token: strings.TrimSpace(body.Token), PaymentMethodID: body.PaymentMethodID, Installments: body.Installments, IdentificationType: body.IdentificationType, IdentificationNumber: body.IdentificationNumber, IdempotencyKey: strings.TrimSpace(r.Header.Get("Idempotency-Key"))}
+	v, err := h.payments.CreateCard(r.Context(), user, r.PathValue("reference"), input)
+	if err != nil {
+		paymentError(w, err)
+		return
+	}
+	writeQuoteJSON(w, 200, map[string]any{"data": v})
 }
 func (h *PaymentHandler) session(r *http.Request, csrf bool) (string, error) {
 	c, e := r.Cookie("loja3d_customer_session")

@@ -16,6 +16,61 @@ type PaymentRepository struct{ pool DBTXPool }
 
 func NewPaymentRepository(pool DBTXPool) *PaymentRepository { return &PaymentRepository{pool} }
 
+func (r *PaymentRepository) ReserveCard(ctx context.Context, userID, ref string, input domain.CardInput) (domain.CreateCardRequest, *domain.Card, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return domain.CreateCardRequest{}, nil, err
+	}
+	defer tx.Rollback(ctx)
+	var orderID, email, readiness, status, currency string
+	var amount int64
+	err = tx.QueryRow(ctx, `SELECT id,customer_email,payment_readiness,status,currency,total_cents FROM orders WHERE user_id=$1 AND order_number=$2 FOR UPDATE`, userID, ref).Scan(&orderID, &email, &readiness, &status, &currency, &amount)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.CreateCardRequest{}, nil, app.ErrNotFound
+	}
+	if err != nil {
+		return domain.CreateCardRequest{}, nil, err
+	}
+	if status != "pending_payment" || readiness != "ready" || currency != "BRL" || amount <= 0 {
+		return domain.CreateCardRequest{}, nil, app.ErrNotReady
+	}
+	var paymentID, attemptID, method, external, state, detail, brand, last4, authURL string
+	var installments int
+	err = tx.QueryRow(ctx, `SELECT p.id,a.id,a.method,coalesce(a.external_payment_id,''),a.status,coalesce(a.provider_status_detail,''),coalesce(a.card_brand,''),coalesce(a.card_last_four,''),coalesce(a.card_authentication_url,''),coalesce(a.card_installments,0) FROM payments p JOIN payment_attempts a ON a.payment_id=p.id WHERE p.order_id=$1 AND p.status IN ('pending','processing','authorized','paid','partially_refunded') ORDER BY a.created_at DESC LIMIT 1`, orderID).Scan(&paymentID, &attemptID, &method, &external, &state, &detail, &brand, &last4, &authURL, &installments)
+	if err == nil {
+		if method != "card" {
+			return domain.CreateCardRequest{}, nil, app.ErrConflict
+		}
+		if external != "" {
+			card := domain.Card{AttemptID: attemptID, Status: state, StatusDetail: detail, Brand: brand, LastFour: last4, AuthenticationURL: authURL, AmountCents: amount, Installments: installments, RequiresAction: authURL != "" && state == "pending"}
+			if err = tx.Commit(ctx); err != nil {
+				return domain.CreateCardRequest{}, nil, err
+			}
+			return domain.CreateCardRequest{}, &card, nil
+		}
+		return domain.CreateCardRequest{}, nil, app.ErrConflict
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return domain.CreateCardRequest{}, nil, err
+	}
+	err = tx.QueryRow(ctx, `INSERT INTO payments(order_id,method,status,amount_cents,currency) VALUES($1,'card','pending',$2,'BRL') RETURNING id`, orderID, amount).Scan(&paymentID)
+	if err != nil {
+		return domain.CreateCardRequest{}, nil, err
+	}
+	err = tx.QueryRow(ctx, `INSERT INTO payment_attempts(payment_id,provider,method,idempotency_key,status,amount_cents,card_installments,card_payment_method_id) VALUES($1,'mercado_pago','card',$2,'pending',$3,$4,$5) RETURNING id`, paymentID, input.IdempotencyKey, amount, input.Installments, input.PaymentMethodID).Scan(&attemptID)
+	if err != nil {
+		return domain.CreateCardRequest{}, nil, err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO payment_status_events(payment_id,payment_attempt_id,new_status,source,metadata) VALUES($1,$2,'pending','system',jsonb_build_object('order_reference',$3::text,'method','card'))`, paymentID, attemptID, ref)
+	if err != nil {
+		return domain.CreateCardRequest{}, nil, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return domain.CreateCardRequest{}, nil, err
+	}
+	return domain.CreateCardRequest{AttemptID: attemptID, IdempotencyKey: input.IdempotencyKey, OrderReference: ref, PayerEmail: email, Token: input.Token, PaymentMethodID: input.PaymentMethodID, IdentificationType: input.IdentificationType, IdentificationNumber: input.IdentificationNumber, AmountCents: amount, Installments: input.Installments}, nil, nil
+}
+
 func (r *PaymentRepository) ReservePIX(ctx context.Context, userID, ref string, expires time.Time) (domain.CreateRequest, *domain.PIX, error) {
 	tx, e := r.pool.Begin(ctx)
 	if e != nil {
@@ -34,9 +89,12 @@ func (r *PaymentRepository) ReservePIX(ctx context.Context, userID, ref string, 
 	if status != "pending_payment" || readiness != "ready" || currency != "BRL" || amount <= 0 {
 		return domain.CreateRequest{}, nil, app.ErrNotReady
 	}
-	var paymentID, attemptID, key, external, attemptStatus, qr, qr64, ticket string
+	var paymentID, attemptID, key, external, attemptStatus, method, qr, qr64, ticket string
 	var attemptExpires *time.Time
-	e = tx.QueryRow(ctx, `SELECT p.id,a.id,a.idempotency_key,coalesce(a.external_payment_id,''),a.status,coalesce(a.pix_qr_code,''),coalesce(a.pix_qr_code_base64,''),coalesce(a.pix_ticket_url,''),a.pix_expires_at FROM payments p JOIN payment_attempts a ON a.payment_id=p.id WHERE p.order_id=$1 AND p.status IN ('pending','processing','authorized','paid','partially_refunded') ORDER BY a.created_at DESC LIMIT 1`, orderID).Scan(&paymentID, &attemptID, &key, &external, &attemptStatus, &qr, &qr64, &ticket, &attemptExpires)
+	e = tx.QueryRow(ctx, `SELECT p.id,a.id,a.idempotency_key,coalesce(a.external_payment_id,''),a.status,a.method,coalesce(a.pix_qr_code,''),coalesce(a.pix_qr_code_base64,''),coalesce(a.pix_ticket_url,''),a.pix_expires_at FROM payments p JOIN payment_attempts a ON a.payment_id=p.id WHERE p.order_id=$1 AND p.status IN ('pending','processing','authorized','paid','partially_refunded') ORDER BY a.created_at DESC LIMIT 1`, orderID).Scan(&paymentID, &attemptID, &key, &external, &attemptStatus, &method, &qr, &qr64, &ticket, &attemptExpires)
+	if e == nil && method != "pix" {
+		return domain.CreateRequest{}, nil, app.ErrConflict
+	}
 	if e == nil {
 		if external != "" && attemptExpires != nil && !attemptExpires.After(time.Now()) && (attemptStatus == "pending" || attemptStatus == "processing") {
 			if _, e = tx.Exec(ctx, `UPDATE payment_attempts SET status='expired',updated_at=now() WHERE id=$1`, attemptID); e != nil {
@@ -142,6 +200,34 @@ func (r *PaymentRepository) CompletePIX(ctx context.Context, req domain.CreateRe
 		return domain.PIX{}, e
 	}
 	return domain.PIX{AttemptID: req.AttemptID, Status: status, QRCode: p.QRCode, QRCodeBase64: p.QRCodeBase64, TicketURL: p.TicketURL, AmountCents: req.AmountCents, ExpiresAt: expires}, nil
+}
+func (r *PaymentRepository) CompleteCard(ctx context.Context, req domain.CreateCardRequest, p domain.ProviderPayment) (domain.Card, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return domain.Card{}, err
+	}
+	defer tx.Rollback(ctx)
+	state, paymentState := attemptStatus(p.Status, p.StatusDetail, p.RefundedCents), internalStatus(p.Status, p.RefundedCents)
+	// A synchronous provider response is not the final order confirmation. Keep
+	// the aggregate processing until the signed webhook is reconciled.
+	if paymentState == "paid" {
+		paymentState, state = "processing", "processing"
+	}
+	tag, err := tx.Exec(ctx, `UPDATE payment_attempts SET external_payment_id=$2,status=$3,provider_status=$4,provider_status_detail=nullif($5,''),card_brand=nullif($6,''),card_last_four=nullif($7,''),card_authentication_url=nullif($8,''),provider_updated_at=coalesce($9,now()),updated_at=now() WHERE id=$1 AND external_payment_id IS NULL AND amount_cents=$10`, req.AttemptID, p.ID, state, p.Status, p.StatusDetail, p.CardBrand, p.CardLastFour, p.AuthenticationURL, p.UpdatedAt, req.AmountCents)
+	if err != nil {
+		return domain.Card{}, err
+	}
+	if tag.RowsAffected() != 1 {
+		return domain.Card{}, app.ErrConflict
+	}
+	_, err = tx.Exec(ctx, `UPDATE payments SET status=$2,updated_at=now() WHERE id=(SELECT payment_id FROM payment_attempts WHERE id=$1)`, req.AttemptID, paymentState)
+	if err != nil {
+		return domain.Card{}, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return domain.Card{}, err
+	}
+	return domain.Card{AttemptID: req.AttemptID, Status: state, StatusDetail: p.StatusDetail, Brand: p.CardBrand, LastFour: p.CardLastFour, AuthenticationURL: p.AuthenticationURL, AmountCents: req.AmountCents, Installments: req.Installments, RequiresAction: p.AuthenticationURL != "" && p.Status == "pending"}, nil
 }
 func (r *PaymentRepository) FailAttempt(ctx context.Context, id, code string) error {
 	tx, e := r.pool.Begin(ctx)

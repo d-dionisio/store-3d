@@ -19,6 +19,10 @@ func (f *fakeProvider) CreatePIX(context.Context, domain.CreateRequest) (domain.
 	f.created++
 	return f.payment, f.err
 }
+func (f *fakeProvider) CreateCard(context.Context, domain.CreateCardRequest) (domain.ProviderPayment, error) {
+	f.created++
+	return f.payment, f.err
+}
 func (f *fakeProvider) GetPayment(context.Context, string) (domain.ProviderPayment, error) {
 	return f.payment, f.err
 }
@@ -38,6 +42,12 @@ func (f *fakeRepo) ReservePIX(context.Context, string, string, time.Time) (domai
 }
 func (f *fakeRepo) CompletePIX(context.Context, domain.CreateRequest, domain.ProviderPayment) (domain.PIX, error) {
 	return domain.PIX{AttemptID: f.req.AttemptID, Status: "pending"}, nil
+}
+func (f *fakeRepo) ReserveCard(context.Context, string, string, domain.CardInput) (domain.CreateCardRequest, *domain.Card, error) {
+	return domain.CreateCardRequest{}, nil, f.reserveErr
+}
+func (f *fakeRepo) CompleteCard(context.Context, domain.CreateCardRequest, domain.ProviderPayment) (domain.Card, error) {
+	return domain.Card{}, nil
 }
 func (f *fakeRepo) FailAttempt(context.Context, string, string) error { f.failed++; return nil }
 func (f *fakeRepo) Status(context.Context, string, string) (domain.Status, error) {
@@ -64,6 +74,12 @@ func TestCreatePIXReusesExistingAttempt(t *testing.T) {
 	got, e := New(r, p, time.Hour).CreatePIX(context.Background(), "u", "PED-1")
 	if e != nil || got.AttemptID != "a" || p.created != 0 {
 		t.Fatalf("got=%+v calls=%d err=%v", got, p.created, e)
+	}
+}
+func TestCreateCardRejectsInvalidTokenBeforeRepository(t *testing.T) {
+	_, err := New(&fakeRepo{}, &fakeProvider{}, time.Hour).CreateCard(context.Background(), "u", "PED-1", domain.CardInput{Token: "short", PaymentMethodID: "visa", Installments: 1, IdempotencyKey: "1234567890123456"})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("err=%v", err)
 	}
 }
 func TestWebhookValidationAndDeduplication(t *testing.T) {

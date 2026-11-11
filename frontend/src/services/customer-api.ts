@@ -29,3 +29,6 @@ export type PixPayment={AttemptID:string;Status:string;QRCode:string;QRCodeBase6
 export type PaymentStatus={AttemptID:string;OrderReference:string;Method:string;Status:string;AmountCents:number;PaidAmountCents:number;RefundedAmountCents:number;ExpiresAt:string|null;PaidAt:string|null};
 export async function createPix(reference:string){const csrf=sessionStorage.getItem("loja3d_customer_csrf")||"";return call<PixPayment>(`/orders/${encodeURIComponent(reference)}/payments/pix`,{method:"POST",headers:{"X-CSRF-Token":csrf}})}
 export async function paymentStatus(reference:string){return call<PaymentStatus>(`/orders/${encodeURIComponent(reference)}/payment`)}
+export type CardPayment={AttemptID:string;Status:string;StatusDetail:string;Brand:string;LastFour:string;AuthenticationURL:string;AmountCents:number;Installments:number;RequiresAction:boolean};
+export type CardTokenizedData={token:string;payment_method_id:string;installments:number;identification_type?:string;identification_number?:string};
+export async function createCardPayment(reference:string,data:CardTokenizedData,key:string){const csrf=sessionStorage.getItem("loja3d_customer_csrf")||"";return call<CardPayment>(`/orders/${encodeURIComponent(reference)}/payments/card`,{method:"POST",headers:{"X-CSRF-Token":csrf,"Idempotency-Key":key},body:JSON.stringify(data)})}

@@ -11,7 +11,7 @@ func CORS(allowedOrigin string) func(http.Handler) http.Handler {
 				response.Header().Set("Access-Control-Allow-Credentials", "true")
 				response.Header().Set("Vary", "Origin")
 				response.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-				response.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-CSRF-Token")
+				response.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-CSRF-Token, Idempotency-Key")
 			}
 
 			if request.Method == http.MethodOptions {

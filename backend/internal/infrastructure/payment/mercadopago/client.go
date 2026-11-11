@@ -37,6 +37,9 @@ type Unavailable struct{}
 func (Unavailable) CreatePIX(context.Context, domain.CreateRequest) (domain.ProviderPayment, error) {
 	return domain.ProviderPayment{}, errors.New("Mercado Pago unavailable")
 }
+func (Unavailable) CreateCard(context.Context, domain.CreateCardRequest) (domain.ProviderPayment, error) {
+	return domain.ProviderPayment{}, errors.New("Mercado Pago unavailable")
+}
 func (Unavailable) GetPayment(context.Context, string) (domain.ProviderPayment, error) {
 	return domain.ProviderPayment{}, errors.New("Mercado Pago unavailable")
 }
@@ -47,16 +50,31 @@ type createBody struct {
 	TotalAmount       string `json:"total_amount"`
 	ExternalReference string `json:"external_reference"`
 	ProcessingMode    string `json:"processing_mode"`
-	Payer             struct {
-		Email string `json:"email"`
+	CaptureMode       string `json:"capture_mode,omitempty"`
+	Config            *struct {
+		Online struct {
+			TransactionSecurity struct {
+				Validation     string `json:"validation"`
+				LiabilityShift string `json:"liability_shift"`
+			} `json:"transaction_security"`
+		} `json:"online"`
+	} `json:"config,omitempty"`
+	Payer struct {
+		Email          string `json:"email"`
+		Identification *struct {
+			Type   string `json:"type"`
+			Number string `json:"number"`
+		} `json:"identification,omitempty"`
 	} `json:"payer"`
 	Transactions struct {
 		Payments []struct {
 			Amount         string `json:"amount"`
 			ExpirationTime string `json:"expiration_time,omitempty"`
 			PaymentMethod  struct {
-				ID   string `json:"id"`
-				Type string `json:"type"`
+				ID           string `json:"id"`
+				Type         string `json:"type"`
+				Token        string `json:"token,omitempty"`
+				Installments int    `json:"installments,omitempty"`
 			} `json:"payment_method"`
 		} `json:"payments"`
 	} `json:"transactions"`
@@ -77,15 +95,61 @@ type orderResponse struct {
 			StatusDetail   string `json:"status_detail"`
 			ExpirationTime string `json:"expiration_time"`
 			PaymentMethod  struct {
-				TicketURL    string `json:"ticket_url"`
-				QRCode       string `json:"qr_code"`
-				QRCodeBase64 string `json:"qr_code_base64"`
+				ID                  string `json:"id"`
+				LastFour            string `json:"last_four_digits"`
+				TicketURL           string `json:"ticket_url"`
+				QRCode              string `json:"qr_code"`
+				QRCodeBase64        string `json:"qr_code_base64"`
+				TransactionSecurity struct {
+					URL string `json:"url"`
+				} `json:"transaction_security"`
 			} `json:"payment_method"`
 		} `json:"payments"`
 		Refunds []struct {
 			Amount json.RawMessage `json:"amount"`
 		} `json:"refunds"`
 	} `json:"transactions"`
+}
+
+func (c *Client) CreateCard(ctx context.Context, in domain.CreateCardRequest) (domain.ProviderPayment, error) {
+	amount := formatCents(in.AmountCents)
+	var b createBody
+	b.Type, b.TotalAmount, b.ExternalReference = "online", amount, in.OrderReference
+	b.ProcessingMode, b.CaptureMode, b.Payer.Email = "automatic", "automatic", in.PayerEmail
+	b.Config = &struct {
+		Online struct {
+			TransactionSecurity struct {
+				Validation     string `json:"validation"`
+				LiabilityShift string `json:"liability_shift"`
+			} `json:"transaction_security"`
+		} `json:"online"`
+	}{}
+	b.Config.Online.TransactionSecurity.Validation = "on_fraud_risk"
+	b.Config.Online.TransactionSecurity.LiabilityShift = "required"
+	if in.IdentificationType != "" {
+		b.Payer.Identification = &struct {
+			Type   string `json:"type"`
+			Number string `json:"number"`
+		}{in.IdentificationType, in.IdentificationNumber}
+	}
+	b.Transactions.Payments = append(b.Transactions.Payments, struct {
+		Amount         string `json:"amount"`
+		ExpirationTime string `json:"expiration_time,omitempty"`
+		PaymentMethod  struct {
+			ID           string `json:"id"`
+			Type         string `json:"type"`
+			Token        string `json:"token,omitempty"`
+			Installments int    `json:"installments,omitempty"`
+		} `json:"payment_method"`
+	}{})
+	p := &b.Transactions.Payments[0]
+	p.Amount, p.PaymentMethod.ID, p.PaymentMethod.Type = amount, in.PaymentMethodID, "credit_card"
+	p.PaymentMethod.Token, p.PaymentMethod.Installments = in.Token, in.Installments
+	raw, err := json.Marshal(b)
+	if err != nil {
+		return domain.ProviderPayment{}, err
+	}
+	return c.do(ctx, http.MethodPost, "/v1/orders", in.IdempotencyKey, raw)
 }
 
 func (c *Client) CreatePIX(ctx context.Context, in domain.CreateRequest) (domain.ProviderPayment, error) {
@@ -100,8 +164,10 @@ func (c *Client) CreatePIX(ctx context.Context, in domain.CreateRequest) (domain
 		Amount         string `json:"amount"`
 		ExpirationTime string `json:"expiration_time,omitempty"`
 		PaymentMethod  struct {
-			ID   string `json:"id"`
-			Type string `json:"type"`
+			ID           string `json:"id"`
+			Type         string `json:"type"`
+			Token        string `json:"token,omitempty"`
+			Installments int    `json:"installments,omitempty"`
 		} `json:"payment_method"`
 	}{})
 	b.Transactions.Payments[0].Amount = amount
@@ -189,6 +255,15 @@ func mapOrder(order orderResponse) (domain.ProviderPayment, error) {
 		AmountCents:       amount,
 		RefundedCents:     refunded,
 		UpdatedAt:         parseTime(order.LastUpdatedDate),
+		CardBrand:         payment.PaymentMethod.ID,
+		CardLastFour:      payment.PaymentMethod.LastFour,
+		AuthenticationURL: payment.PaymentMethod.TransactionSecurity.URL,
+	}
+	if out.AuthenticationURL != "" {
+		u, err := url.Parse(out.AuthenticationURL)
+		if err != nil || u.Scheme != "https" || !(u.Hostname() == "mercadopago.com" || strings.HasSuffix(u.Hostname(), ".mercadopago.com") || u.Hostname() == "mercadopago.com.br" || strings.HasSuffix(u.Hostname(), ".mercadopago.com.br")) {
+			return domain.ProviderPayment{}, errors.New("invalid authentication URL")
+		}
 	}
 	if payment.ExpirationTime != "" {
 		out.ExpiresAt = parseTime(payment.ExpirationTime)

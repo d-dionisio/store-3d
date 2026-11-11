@@ -362,7 +362,7 @@ Ainda não foram implementados:
 - Webhooks validam HMAC-SHA256 em tempo constante usando `x-signature`, `x-request-id` e `data.id`. O payload apenas dispara consulta autenticada ao Mercado Pago e nunca confirma um pedido diretamente. Quando a notificação de Order não possui um ID de evento no topo, o SHA-256 do payload assinado funciona como chave estável de deduplicação.
 - `provider_updated_at` impede regressão por eventos fora de ordem. Eventos são deduplicados, falhas podem ser reprocessadas e toda mudança gera histórico financeiro.
 - Somente `paid` confirma o pedido. Estados pending/processing/authorized não iniciam produção. Reembolsos atualizam o agregado e criam registro em `payment_refunds`.
-- Cartão permanece preparado conceitualmente por `method=card`, mas deverá usar MercadoPago.js/Card Payment Brick para tokenização; PAN, CVV e token bruto não são persistidos.
+- Cartão usa MercadoPago.js v2 e o Card Payment Brick. Secure Fields mantêm PAN/CVV fora da aplicação; somente o token efêmero chega ao backend e nunca é persistido ou registrado em logs.
 - A criação do pedido, itens, endereço, histórico e auditoria ocorre numa única transação. Não há captura de pagamento, produção nem reserva definitiva de estoque.
 
 ## Etapa 8.3.1 — validação do sandbox Mercado Pago
@@ -372,4 +372,13 @@ Ainda não foram implementados:
 - Em 11 de novembro de 2026, a credencial de teste criou e consultou uma order PIX oficial pela Orders API, incluindo QR Code e ticket. O adaptador foi migrado de `/v1/payments` para `/v1/orders` e o teste opt-in do próprio client passou contra o sandbox real.
 - O request server-side da Orders API exige `payer.email`; dados adicionais de identificação não são inventados nem persistidos pelo adaptador.
 - Nenhum sucesso obtido com mock ou banco local pode ser reportado como validação do sandbox.
+
+## Etapa 8.4 — cartão e 3DS
+
+- Cartão reutiliza `payments`, as tentativas idempotentes e a reconciliação de Orders já usadas pelo PIX; não existe um segundo agregado financeiro.
+- A order usa captura automática e `config.online.transaction_security`. `action_required/pending_challenge` continua pendente e nunca confirma pedido.
+- A migration 17 preserva parcelas, método e URL temporária do desafio. Token do cartão e documento do pagador são transitórios e não entram no PostgreSQL.
+- A URL 3DS só é aceita em HTTPS no domínio `mercadopago.com` ou subdomínio. Apenas a consulta autenticada disparada pelo webhook confirma o pagamento.
+- Uma obrigação aberta impede criar outra modalidade no mesmo pedido. Trocar PIX por cartão após gerar cobrança exige cancelamento ou expiração explícita, evitando cobranças simultâneas.
+- O Card Payment Brick obtém do provedor as condições de parcelamento para o total atual; a loja não inventa parcelas.
 

@@ -152,6 +152,30 @@ func TestPIXCompletionWebhookApprovalDedupOutOfOrderAndRefund(t *testing.T) {
 		t.Fatalf("status=%s refunded=%d rows=%d", paymentStatus, refunded, refunds)
 	}
 }
+func TestCardReservationCompletionAndMethodConflict(t *testing.T) {
+	ctx := context.Background()
+	f, ref, r := paymentFixture(t)
+	readyPaymentOrder(t, f, ref)
+	input := domain.CardInput{Token: "transient-card-token", PaymentMethodID: "master", Installments: 3, IdempotencyKey: "card-" + ref}
+	req, existing, err := r.ReserveCard(ctx, f.userID, ref, input)
+	if err != nil || existing != nil || req.Token != "transient-card-token" {
+		t.Fatalf("req=%+v existing=%+v err=%v", req, existing, err)
+	}
+	now := time.Now().UTC()
+	card, err := r.CompleteCard(ctx, req, domain.ProviderPayment{ID: "ORDCARD" + ref, Status: "pending", StatusDetail: "pending_challenge", Currency: "BRL", ExternalReference: ref, AmountCents: req.AmountCents, CardBrand: "master", CardLastFour: "1234", AuthenticationURL: "https://www.mercadopago.com/auth/card/challenge", UpdatedAt: &now})
+	if err != nil || !card.RequiresAction || card.LastFour != "1234" {
+		t.Fatalf("card=%+v err=%v", card, err)
+	}
+	var storedToken string
+	err = f.pool.QueryRow(ctx, `SELECT coalesce(card_payment_method_id,'') FROM payment_attempts WHERE id=$1`, req.AttemptID).Scan(&storedToken)
+	if err != nil || storedToken != "master" {
+		t.Fatalf("method=%s err=%v", storedToken, err)
+	}
+	_, _, err = r.ReservePIX(ctx, f.userID, ref, time.Now().Add(time.Hour))
+	if !errors.Is(err, paymentapp.ErrConflict) {
+		t.Fatalf("expected method conflict, got %v", err)
+	}
+}
 func TestPaymentValueMismatchRollsBack(t *testing.T) {
 	ctx := context.Background()
 	f, ref, r := paymentFixture(t)

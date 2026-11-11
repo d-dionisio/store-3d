@@ -77,6 +77,7 @@ func newHandler(frontendOrigin string, readiness handlers.ReadinessChecker, cata
 	}
 	if payment != nil {
 		router.HandleFunc("POST /api/v1/customer/orders/{reference}/payments/pix", payment.CreatePIX)
+		router.HandleFunc("POST /api/v1/customer/orders/{reference}/payments/card", payment.CreateCard)
 		router.HandleFunc("GET /api/v1/customer/orders/{reference}/payment", payment.Status)
 		router.HandleFunc("POST /api/v1/webhooks/mercado-pago", payment.Webhook)
 	}

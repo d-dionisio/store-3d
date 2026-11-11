@@ -15,22 +15,53 @@ var (
 	ErrUnavailable    = errors.New("payment provider unavailable")
 	ErrInvalidWebhook = errors.New("invalid webhook")
 	ErrValueMismatch  = errors.New("payment value mismatch")
+	ErrInvalidInput   = errors.New("invalid payment input")
 )
 
 type Provider interface {
 	CreatePIX(context.Context, domain.CreateRequest) (domain.ProviderPayment, error)
+	CreateCard(context.Context, domain.CreateCardRequest) (domain.ProviderPayment, error)
 	GetPayment(context.Context, string) (domain.ProviderPayment, error)
 	ValidateWebhook(string, string, string) bool
 }
 type Repository interface {
 	ReservePIX(context.Context, string, string, time.Time) (domain.CreateRequest, *domain.PIX, error)
 	CompletePIX(context.Context, domain.CreateRequest, domain.ProviderPayment) (domain.PIX, error)
+	ReserveCard(context.Context, string, string, domain.CardInput) (domain.CreateCardRequest, *domain.Card, error)
+	CompleteCard(context.Context, domain.CreateCardRequest, domain.ProviderPayment) (domain.Card, error)
 	FailAttempt(context.Context, string, string) error
 	Status(context.Context, string, string) (domain.Status, error)
 	RecordWebhook(context.Context, domain.Webhook) (bool, error)
 	Reconcile(context.Context, domain.Webhook, domain.ProviderPayment) error
 	MarkWebhookFailed(context.Context, string, string) error
 }
+
+func (s *Service) CreateCard(ctx context.Context, userID, reference string, input domain.CardInput) (domain.Card, error) {
+	if len(input.Token) < 8 || len(input.Token) > 512 || len(input.PaymentMethodID) < 1 || len(input.PaymentMethodID) > 64 || input.Installments < 1 || input.Installments > 24 || len(input.IdempotencyKey) < 16 || len(input.IdempotencyKey) > 128 {
+		return domain.Card{}, ErrInvalidInput
+	}
+	if (input.IdentificationType == "") != (input.IdentificationNumber == "") || len(input.IdentificationType) > 16 || len(input.IdentificationNumber) > 32 {
+		return domain.Card{}, ErrInvalidInput
+	}
+	req, existing, err := s.repo.ReserveCard(ctx, userID, reference, input)
+	if err != nil {
+		return domain.Card{}, err
+	}
+	if existing != nil {
+		return *existing, nil
+	}
+	result, err := s.provider.CreateCard(ctx, req)
+	if err != nil {
+		_ = s.repo.FailAttempt(ctx, req.AttemptID, "provider_unavailable")
+		return domain.Card{}, ErrUnavailable
+	}
+	if result.ExternalReference != req.OrderReference || result.Currency != "BRL" || result.AmountCents != req.AmountCents {
+		_ = s.repo.FailAttempt(ctx, req.AttemptID, "provider_response_mismatch")
+		return domain.Card{}, ErrValueMismatch
+	}
+	return s.repo.CompleteCard(ctx, req, result)
+}
+
 type Service struct {
 	repo     Repository
 	provider Provider

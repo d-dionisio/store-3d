@@ -61,6 +61,46 @@ func TestCreatePIXWithOrdersAPI(t *testing.T) {
 	}
 }
 
+func TestCreateCardWithOrdersAPIAnd3DS(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			CaptureMode string `json:"capture_mode"`
+			Config      struct {
+				Online struct {
+					TransactionSecurity struct {
+						Validation     string `json:"validation"`
+						LiabilityShift string `json:"liability_shift"`
+					} `json:"transaction_security"`
+				} `json:"online"`
+			} `json:"config"`
+			Transactions struct {
+				Payments []struct {
+					PaymentMethod struct {
+						ID           string `json:"id"`
+						Type         string `json:"type"`
+						Token        string `json:"token"`
+						Installments int    `json:"installments"`
+					} `json:"payment_method"`
+				} `json:"payments"`
+			} `json:"transactions"`
+		}
+		if json.NewDecoder(r.Body).Decode(&body) != nil {
+			t.Fatal("invalid request")
+		}
+		method := body.Transactions.Payments[0].PaymentMethod
+		if body.CaptureMode != "automatic" || body.Config.Online.TransactionSecurity.Validation != "on_fraud_risk" || body.Config.Online.TransactionSecurity.LiabilityShift != "required" || method.ID != "master" || method.Type != "credit_card" || method.Token != "card-token" || method.Installments != 3 {
+			t.Fatalf("body=%+v", body)
+		}
+		_, _ = w.Write([]byte(`{"id":"ORD01CARD","status":"action_required","status_detail":"pending_challenge","country_code":"BRA","external_reference":"PED-CARD","total_amount":"120.00","last_updated_date":"2026-11-11T12:00:00Z","transactions":{"payments":[{"status":"action_required","status_detail":"pending_challenge","payment_method":{"id":"master","last_four_digits":"1234","transaction_security":{"url":"https://www.mercadopago.com/auth/card/challenge"}}}]}}`))
+	}))
+	defer srv.Close()
+	c, _ := New(srv.URL, "token", "secret", srv.Client())
+	p, err := c.CreateCard(context.Background(), domain.CreateCardRequest{IdempotencyKey: "idem-card", OrderReference: "PED-CARD", PayerEmail: "buyer@example.com", AmountCents: 12000, Token: "card-token", PaymentMethodID: "master", Installments: 3})
+	if err != nil || p.Status != "pending" || p.StatusDetail != "pending_challenge" || p.AuthenticationURL == "" || p.CardLastFour != "1234" {
+		t.Fatalf("payment=%+v err=%v", p, err)
+	}
+}
+
 func TestGetOrderAndStatusMapping(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/orders/ORD01APPROVED" {

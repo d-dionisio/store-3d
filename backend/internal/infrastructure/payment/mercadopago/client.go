@@ -209,6 +209,17 @@ func (c *Client) do(ctx context.Context, method, path, key string, body []byte) 
 		return domain.ProviderPayment{}, e
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		// Orders API returns a completed failed order inside `data` with HTTP
+		// 402 for business declines. Preserve that financial result instead of
+		// treating a card refusal as provider downtime.
+		if res.StatusCode == http.StatusPaymentRequired {
+			var declined struct {
+				Data orderResponse `json:"data"`
+			}
+			if json.Unmarshal(raw, &declined) == nil && declined.Data.ID != "" {
+				return mapOrder(declined.Data)
+			}
+		}
 		return domain.ProviderPayment{}, fmt.Errorf("provider status %d", res.StatusCode)
 	}
 	var order orderResponse

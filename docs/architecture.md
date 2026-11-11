@@ -381,6 +381,15 @@ Ainda não foram implementados:
 - A URL 3DS só é aceita em HTTPS no domínio `mercadopago.com` ou subdomínio. Apenas a consulta autenticada disparada pelo webhook confirma o pagamento.
 - Uma obrigação aberta impede criar outra modalidade no mesmo pedido. Trocar PIX por cartão após gerar cobrança exige cancelamento ou expiração explícita, evitando cobranças simultâneas.
 - O Card Payment Brick obtém do provedor as condições de parcelamento para o total atual; a loja não inventa parcelas.
+- Recusas comerciais da Orders API podem usar HTTP 402 com a Order no nó `data`; esse retorno é um resultado financeiro válido, não indisponibilidade do provedor.
+- Evidências da validação de cartão são mantidas em `docs/mercado-pago-card-sandbox-validation.md`, sempre separando mock, PostgreSQL, sandbox e navegador.
+
+## Etapa 8.4.2 — exposição restrita do webhook
+
+- O sandbox não reproduziu o Challenge documentado para `APRO-CHOK` e `OTHE-CHNO`, embora o payload possua `on_fraud_risk`, `liability_shift=required` e captura automática. Sem `action_required/pending_challenge` e URL real, 3DS permanece não validado; não se altera o contrato por tentativa e erro.
+- `cmd/webhook-proxy` é uma borda temporária e independente da API. Só encaminha `POST /api/v1/webhooks/mercado-pago`, preserva os headers HMAC e `data.id`, remove cookies/autorização, limita corpo e taxa e recusa upstream que não seja loopback.
+- Um túnel HTTPS autorizado deve apontar para a porta 8090 do proxy, nunca para a 8080 da API. Assim, endpoints administrativos, autenticação de clientes e health checks não ficam publicamente roteáveis.
+- O proxy não substitui a validação HMAC, a consulta autenticada da Order, a deduplicação nem a transação financeira já existentes. Ele também não inicia exposição pública automaticamente.
 
 ## Etapa 9 — storefront Editorial Luxury
 

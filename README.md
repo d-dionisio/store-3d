@@ -327,3 +327,7 @@ Copie `NEXT_PUBLIC_MERCADO_PAGO_PUBLIC_KEY` para `frontend/.env.local` usando a 
 
 Aplique a migration 17 com `cd backend` e `go run ./cmd/migrate up`. Use Public Key e Access Token de teste da mesma aplicação e nunca coloque o Access Token em uma variável `NEXT_PUBLIC_*`.
 
+## Proxy temporário do webhook
+
+Para uma validação externa autorizada, mantenha a API em `127.0.0.1:8080` e execute `go run ./cmd/webhook-proxy` no diretório `backend`. O proxy escuta em `:8090` e só encaminha `POST /api/v1/webhooks/mercado-pago`; todas as demais rotas ficam bloqueadas. Aponte o túnel HTTPS exclusivamente para a porta 8090. O procedimento e os testes de bloqueio estão em `docs/mercado-pago-webhook-proxy.md`. O projeto nunca abre o túnel automaticamente.
+

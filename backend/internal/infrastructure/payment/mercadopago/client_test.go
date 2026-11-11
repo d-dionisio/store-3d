@@ -134,6 +134,19 @@ func TestProviderFailureAndTimeout(t *testing.T) {
 	}
 }
 
+func TestCardDeclineMapsOrderFromPaymentRequiredEnvelope(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusPaymentRequired)
+		_, _ = w.Write([]byte(`{"errors":[{"code":"failed"}],"data":{"id":"ORD01DECLINED","status":"failed","status_detail":"failed","country_code":"BRA","external_reference":"PED-DECLINED","total_amount":"50.00","last_updated_date":"2026-11-11T12:00:00Z","transactions":{"payments":[{"status":"failed","status_detail":"cc_rejected_other_reason","payment_method":{"id":"master","type":"credit_card"}}]}}}`))
+	}))
+	defer srv.Close()
+	c, _ := New(srv.URL, "token", "secret", srv.Client())
+	p, err := c.CreateCard(context.Background(), domain.CreateCardRequest{IdempotencyKey: "decline-key", OrderReference: "PED-DECLINED", PayerEmail: "buyer@example.com", AmountCents: 5000, Token: "card-token", PaymentMethodID: "master", Installments: 1})
+	if err != nil || p.Status != "rejected" || p.ID != "ORD01DECLINED" {
+		t.Fatalf("payment=%+v err=%v", p, err)
+	}
+}
+
 func TestMoneyExpirationAndStatusMapping(t *testing.T) {
 	for input, expected := range map[string]int64{`"10"`: 1000, `"10.2"`: 1020, `"10.20"`: 1020, `10.200`: 1020} {
 		got, e := parseCents(json.RawMessage(input))

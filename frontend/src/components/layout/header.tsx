@@ -21,7 +21,7 @@ export function Header() {
   const [scrolled, setScrolled] = useState(false);
   const panel = useRef<HTMLElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
-  const { count } = useCart();
+  const { count, openCart } = useCart();
 
   useEffect(() => {
     const update = () => setScrolled(window.scrollY > 28);
@@ -55,7 +55,7 @@ export function Header() {
       <div className="header-actions">
         <Link href="/produtos" aria-label="Buscar produtos"><Search size={18} /></Link>
         <Link href="/minha-conta" aria-label="Minha conta"><UserRound size={18} /></Link>
-        <Link href="/carrinho" aria-label={`Carrinho com ${count} itens`} className="cart-link"><ShoppingBag size={18} />{count > 0 && <span>{count}</span>}</Link>
+        <button type="button" onClick={() => { setOpen(false); openCart(); }} aria-label={`Abrir carrinho com ${count} itens`} className="cart-link"><ShoppingBag size={18} />{count > 0 && <span>{count}</span>}</button>
         <button ref={trigger} className="menu-button" onClick={() => setOpen(!open)} aria-expanded={open} aria-controls="mobile-menu" aria-label={open ? "Fechar menu" : "Abrir menu"}>{open ? <X /> : <Menu />}</button>
       </div>
     </div>

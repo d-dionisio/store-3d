@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Cormorant_Garamond, Inter } from "next/font/google";
 import { CartProvider } from "@/components/cart/cart-provider";
+import { CartDrawer } from "@/components/cart/cart-drawer";
 import { getSiteUrl } from "@/lib/env";
 import "./globals.css";
 
@@ -17,7 +18,7 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="pt-BR">
-      <body className={`${editorial.variable} ${sans.variable}`}><CartProvider>{children}</CartProvider></body>
+      <body className={`${editorial.variable} ${sans.variable}`}><CartProvider>{children}<CartDrawer /></CartProvider></body>
     </html>
   );
 }

@@ -451,3 +451,12 @@ Ainda não foram implementados:
 - `admin` e `production_manager` administram recursos, fila, conclusão, cancelamento, qualidade e reimpressões. `production_operator` executa trabalhos, registra falhas, consumo e inspeções. `quote_viewer` não acessa produção.
 - Toda mutação HTTP exige sessão administrativa e CSRF. Operações administrativas geram `admin_audit_events`; transições e atividades produtivas também preservam `production_events`.
 
+## Etapa 6.2 — Luxury Smart Cart
+
+- `CartProvider` continua sendo a única fonte de estado do carrinho para header, drawer, página completa e checkout. Não existe um segundo carrinho específico do drawer.
+- O `localStorage` persiste identificador da variante, quantidade e metadados visuais mínimos. Nome, disponibilidade, preço e totais persistidos nunca são autoridade comercial; o backend os revalida antes de exibir o resumo e liberar o checkout.
+- A validação comercial é centralizada no provider para evitar chamadas duplicadas pela página, drawer e checkout. Quando o lote contém uma variante inválida, uma validação individual de recuperação identifica o item indisponível sem descartar os demais itens válidos.
+- A hidratação ocorre somente no cliente e eventos `storage` sincronizam alterações entre abas. O reducer consolida variantes repetidas e limita quantidades ao mesmo máximo aceito pela API.
+- Adicionar um produto abre o drawer sem navegar. O painel funciona como dialog modal, contém foco, fecha por Escape/overlay, restaura o foco anterior, bloqueia a rolagem de fundo e anuncia mudanças relevantes por região viva.
+- O drawer usa apenas CSS e APIs nativas para transição e acessibilidade. `prefers-reduced-motion` elimina movimentos, enquanto o rodapé fixo respeita a safe area móvel.
+

@@ -14,7 +14,8 @@ export function ProductCard({ product }: { product: Product }) {
   const quickAdd = () => {
     const variant = product.variants[0];
     if (!variant) return;
-    addItem({ productId: product.id, productSlug: product.slug, productVariantId: variant.id, quantity: 1 });
+    const image = product.images.find((entry) => entry.variantId === variant.id) ?? product.images.find((entry) => entry.isPrimary) ?? product.images[0];
+    addItem({ productId: product.id, productSlug: product.slug, productVariantId: variant.id, quantity: 1, imageUrl: image?.url, imageAlt: image?.altText, variantLabel: variant.name || `${variant.color.name} · ${variant.material.name}`, priceSnapshotCents: variant.priceCents });
     setAdded(true); setTimeout(() => setAdded(false), 1400);
   };
   return (

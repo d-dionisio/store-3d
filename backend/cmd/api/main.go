@@ -15,6 +15,7 @@ import (
 	customerapp "example.com/loja-3d/backend/internal/application/customer"
 	editorialapp "example.com/loja-3d/backend/internal/application/editorial"
 	paymentapp "example.com/loja-3d/backend/internal/application/payment"
+	productionapp "example.com/loja-3d/backend/internal/application/production"
 	quoteapp "example.com/loja-3d/backend/internal/application/quote"
 	shippingapp "example.com/loja-3d/backend/internal/application/shipping"
 	apihttp "example.com/loja-3d/backend/internal/http"
@@ -118,10 +119,12 @@ func main() {
 	}
 	paymentService := paymentapp.New(paymentRepository, paymentProvider, mpTTL)
 	paymentHandler := handlers.NewPaymentHandler(paymentService, customerService)
+	productionService := productionapp.New(postgres.NewProductionRepository(pool))
+	productionHandler := handlers.NewProductionHandler(productionService, adminService)
 
 	server := &http.Server{
 		Addr:              ":" + port,
-		Handler:           apihttp.NewHandlerComplete(frontendOrigin, databaseHealth, catalogHandler, quoteHandler, adminHandler, customerHandler, shippingHandler, paymentHandler, editorialHandler),
+		Handler:           apihttp.NewHandlerCompleteWithProduction(frontendOrigin, databaseHealth, catalogHandler, quoteHandler, adminHandler, customerHandler, shippingHandler, paymentHandler, productionHandler, editorialHandler),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,

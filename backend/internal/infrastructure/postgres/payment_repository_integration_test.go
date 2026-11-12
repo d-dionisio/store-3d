@@ -115,7 +115,7 @@ func TestPIXCompletionWebhookApprovalDedupOutOfOrderAndRefund(t *testing.T) {
 		t.Fatal(e)
 	}
 	var orderStatus, paymentStatus string
-	var events int
+	var events, productionJobs int
 	e = f.pool.QueryRow(ctx, `SELECT o.status,p.status FROM orders o JOIN payments p ON p.order_id=o.id WHERE o.order_number=$1`, ref).Scan(&orderStatus, &paymentStatus)
 	if e != nil || orderStatus != "confirmed" || paymentStatus != "paid" {
 		t.Fatalf("order=%s payment=%s err=%v", orderStatus, paymentStatus, e)
@@ -123,6 +123,13 @@ func TestPIXCompletionWebhookApprovalDedupOutOfOrderAndRefund(t *testing.T) {
 	_ = f.pool.QueryRow(ctx, `SELECT count(*) FROM order_status_events e JOIN orders o ON o.id=e.order_id WHERE o.order_number=$1 AND e.status='confirmed'`, ref).Scan(&events)
 	if events != 1 {
 		t.Fatalf("confirmed events=%d", events)
+	}
+	// Reconciliation retries must repair missing work and remain idempotent.
+	if e = r.Reconcile(ctx, w, domain.ProviderPayment{ID: "900001", Status: "approved", StatusDetail: "accredited", Currency: "BRL", ExternalReference: ref, AmountCents: req.AmountCents, ApprovedAt: &approved, UpdatedAt: &approved}); e != nil {
+		t.Fatal(e)
+	}
+	if e = f.pool.QueryRow(ctx, `SELECT count(*) FROM production_jobs pj JOIN order_items oi ON oi.id=pj.order_item_id JOIN orders o ON o.id=oi.order_id WHERE o.order_number=$1 AND pj.parent_job_id IS NULL`, ref).Scan(&productionJobs); e != nil || productionJobs != 1 {
+		t.Fatalf("production jobs=%d err=%v", productionJobs, e)
 	}
 	old := now
 	wOld := domain.Webhook{EventID: "event-old-" + ref, EventType: "payment.updated", ExternalPaymentID: "900001", Payload: []byte(`{"id":2,"type":"payment"}`)}

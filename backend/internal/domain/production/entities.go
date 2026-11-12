@@ -258,10 +258,14 @@ func (q QualityInspection) Validate() error {
 }
 
 type ProductionEvent struct {
-	ID, JobID, RunID, AdminUserID string
-	PreviousStatus, NewStatus     string
-	Description                   string
-	OccurredAt                    time.Time
+	ID             string    `json:"id"`
+	JobID          string    `json:"job_id"`
+	RunID          string    `json:"run_id,omitempty"`
+	AdminUserID    string    `json:"admin_user_id,omitempty"`
+	PreviousStatus string    `json:"previous_status,omitempty"`
+	NewStatus      string    `json:"new_status,omitempty"`
+	Description    string    `json:"description"`
+	OccurredAt     time.Time `json:"occurred_at"`
 }
 
 func (e ProductionEvent) Validate() error {

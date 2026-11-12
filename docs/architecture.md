@@ -441,3 +441,13 @@ Ainda não foram implementados:
 - Os papéis `production_operator` e `production_manager` são adicionados sem remover `admin` ou `quote_viewer`. O down converte esses papéis para `admin` antes de restaurar a constraint antiga, permitindo reversão determinística.
 - O domínio `internal/domain/production` não depende de HTTP, PostgreSQL ou bibliotecas externas. Ele replica as regras centrais para falhar cedo, enquanto o PostgreSQL continua sendo a última barreira transacional.
 
+## Etapa 10.3 — aplicação e API administrativa de produção
+
+- A camada segue `HTTP → application/production → domain/production → ProductionRepository → PostgreSQL`. Handlers não executam SQL e o domínio permanece sem dependências de infraestrutura.
+- A migration 22 cria uma unicidade parcial para o job principal de cada item. Duplicatas legadas são preservadas como jobs filhos antes da criação do índice; nenhum histórico é descartado.
+- `create_production_jobs_for_paid_order` é executada dentro da reconciliação financeira. Pedido, pagamento e itens ficam bloqueados, o gate financeiro é revalidado e a criação usa `ON CONFLICT`, tornando webhook, reconciliação e retry idempotentes.
+- Operações compostas de job/run, reimpressão, inspeção/aprovação e ajuste de bobina usam transações. Funções de transição PostgreSQL continuam sendo a autoridade final para estados, versão e eventos.
+- Ajustes manuais de bobina possuem ledger append-only separado do consumo produtivo. Ambos usam versão ou lock de linha; consumo mantém o snapshot de custo definido na Etapa 10.2.
+- `admin` e `production_manager` administram recursos, fila, conclusão, cancelamento, qualidade e reimpressões. `production_operator` executa trabalhos, registra falhas, consumo e inspeções. `quote_viewer` não acessa produção.
+- Toda mutação HTTP exige sessão administrativa e CSRF. Operações administrativas geram `admin_audit_events`; transições e atividades produtivas também preservam `production_events`.
+

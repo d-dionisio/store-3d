@@ -61,7 +61,7 @@ func TestProductionIntegrityIntegration(t *testing.T) {
 	}
 	mustScan(`INSERT INTO production_runs(production_job_id,printer_id,attempt_number,quantity) VALUES($1,$2,1,1) RETURNING id`, []any{job1, printerID}, &run1)
 
-	mustScan(`INSERT INTO production_jobs(order_item_id,material_id,color_id,quantity) VALUES($1,$2,$3,1) RETURNING id`, []any{itemID, materialID, colorID}, &job2)
+	mustScan(`INSERT INTO production_jobs(order_item_id,material_id,color_id,quantity,parent_job_id) VALUES($1,$2,$3,1,$4) RETURNING id`, []any{itemID, materialID, colorID, job1}, &job2)
 	mustScan(`INSERT INTO production_runs(production_job_id,printer_id,attempt_number,quantity) VALUES($1,$2,1,1) RETURNING id`, []any{job2, printerID}, &run2)
 
 	var successes atomic.Int32

@@ -11,21 +11,24 @@ func NewHandler(frontendOrigin string, readiness handlers.ReadinessChecker, cata
 	if len(quotes) > 0 {
 		q = quotes[0]
 	}
-	return newHandler(frontendOrigin, readiness, catalog, q, nil, nil, nil, nil)
+	return newHandler(frontendOrigin, readiness, catalog, q, nil, nil, nil, nil, nil)
 }
 func NewHandlerWithAdmin(frontendOrigin string, readiness handlers.ReadinessChecker, catalog *handlers.CatalogHandler, quotes *handlers.QuoteHandler, admin *handlers.AdminHandler) http.Handler {
-	return newHandler(frontendOrigin, readiness, catalog, quotes, admin, nil, nil, nil)
+	return newHandler(frontendOrigin, readiness, catalog, quotes, admin, nil, nil, nil, nil)
 }
 func NewHandlerFull(frontendOrigin string, readiness handlers.ReadinessChecker, catalog *handlers.CatalogHandler, quotes *handlers.QuoteHandler, admin *handlers.AdminHandler, customer *handlers.CustomerHandler) http.Handler {
-	return newHandler(frontendOrigin, readiness, catalog, quotes, admin, customer, nil, nil)
+	return newHandler(frontendOrigin, readiness, catalog, quotes, admin, customer, nil, nil, nil)
 }
 func NewHandlerWithShipping(frontendOrigin string, readiness handlers.ReadinessChecker, catalog *handlers.CatalogHandler, quotes *handlers.QuoteHandler, admin *handlers.AdminHandler, customer *handlers.CustomerHandler, shipping *handlers.ShippingHandler) http.Handler {
-	return newHandler(frontendOrigin, readiness, catalog, quotes, admin, customer, shipping, nil)
+	return newHandler(frontendOrigin, readiness, catalog, quotes, admin, customer, shipping, nil, nil)
 }
 func NewHandlerComplete(frontendOrigin string, readiness handlers.ReadinessChecker, catalog *handlers.CatalogHandler, quotes *handlers.QuoteHandler, admin *handlers.AdminHandler, customer *handlers.CustomerHandler, shipping *handlers.ShippingHandler, payment *handlers.PaymentHandler, editorial ...*handlers.EditorialHandler) http.Handler {
-	return newHandler(frontendOrigin, readiness, catalog, quotes, admin, customer, shipping, payment, editorial...)
+	return newHandler(frontendOrigin, readiness, catalog, quotes, admin, customer, shipping, payment, nil, editorial...)
 }
-func newHandler(frontendOrigin string, readiness handlers.ReadinessChecker, catalog *handlers.CatalogHandler, quotes *handlers.QuoteHandler, admin *handlers.AdminHandler, customer *handlers.CustomerHandler, shipping *handlers.ShippingHandler, payment *handlers.PaymentHandler, editorial ...*handlers.EditorialHandler) http.Handler {
+func NewHandlerCompleteWithProduction(frontendOrigin string, readiness handlers.ReadinessChecker, catalog *handlers.CatalogHandler, quotes *handlers.QuoteHandler, admin *handlers.AdminHandler, customer *handlers.CustomerHandler, shipping *handlers.ShippingHandler, payment *handlers.PaymentHandler, production *handlers.ProductionHandler, editorial ...*handlers.EditorialHandler) http.Handler {
+	return newHandler(frontendOrigin, readiness, catalog, quotes, admin, customer, shipping, payment, production, editorial...)
+}
+func newHandler(frontendOrigin string, readiness handlers.ReadinessChecker, catalog *handlers.CatalogHandler, quotes *handlers.QuoteHandler, admin *handlers.AdminHandler, customer *handlers.CustomerHandler, shipping *handlers.ShippingHandler, payment *handlers.PaymentHandler, production *handlers.ProductionHandler, editorial ...*handlers.EditorialHandler) http.Handler {
 	router := http.NewServeMux()
 	router.HandleFunc("GET /api/v1/health", handlers.Health)
 	router.HandleFunc("GET /api/v1/ready", handlers.Ready(readiness))
@@ -94,6 +97,34 @@ func newHandler(frontendOrigin string, readiness handlers.ReadinessChecker, cata
 		router.HandleFunc("POST /api/v1/customer/orders/{reference}/payments/card", payment.CreateCard)
 		router.HandleFunc("GET /api/v1/customer/orders/{reference}/payment", payment.Status)
 		router.HandleFunc("POST /api/v1/webhooks/mercado-pago", payment.Webhook)
+	}
+	if production != nil {
+		router.HandleFunc("GET /api/v1/admin/production/jobs", production.ListJobs)
+		router.HandleFunc("POST /api/v1/admin/production/orders/{reference}/jobs", production.CreateOrderJobs)
+		router.HandleFunc("GET /api/v1/admin/production/jobs/{id}", production.GetJob)
+		router.HandleFunc("POST /api/v1/admin/production/jobs/{id}/queue", production.QueueJob)
+		router.HandleFunc("POST /api/v1/admin/production/jobs/{id}/prepare", production.Prepare)
+		router.HandleFunc("POST /api/v1/admin/production/jobs/{id}/complete", production.CompleteJob)
+		router.HandleFunc("POST /api/v1/admin/production/jobs/{id}/cancel", production.CancelJob)
+		router.HandleFunc("POST /api/v1/admin/production/runs/{id}/start", production.StartRun)
+		router.HandleFunc("POST /api/v1/admin/production/runs/{id}/finish", production.FinishRun)
+		router.HandleFunc("POST /api/v1/admin/production/runs/{id}/fail", production.FailRun)
+		router.HandleFunc("POST /api/v1/admin/production/runs/{id}/reprint", production.Reprint)
+		router.HandleFunc("POST /api/v1/admin/production/runs/{id}/materials", production.Consume)
+		router.HandleFunc("POST /api/v1/admin/production/runs/{id}/inspections", production.Inspect)
+		router.HandleFunc("POST /api/v1/admin/production/runs/{id}/approve", production.Approve)
+		router.HandleFunc("POST /api/v1/admin/production/runs/{id}/reject", production.Reject)
+		router.HandleFunc("GET /api/v1/admin/production/printers", production.ListPrinters)
+		router.HandleFunc("POST /api/v1/admin/production/printers", production.CreatePrinter)
+		router.HandleFunc("PUT /api/v1/admin/production/printers/{id}", production.UpdatePrinter)
+		router.HandleFunc("POST /api/v1/admin/production/printers/{id}/status", production.PrinterStatus)
+		router.HandleFunc("POST /api/v1/admin/production/printers/{id}/maintenance", production.Maintenance)
+		router.HandleFunc("GET /api/v1/admin/production/spools", production.ListSpools)
+		router.HandleFunc("POST /api/v1/admin/production/spools", production.CreateSpool)
+		router.HandleFunc("GET /api/v1/admin/production/spools/{id}", production.GetSpool)
+		router.HandleFunc("PUT /api/v1/admin/production/spools/{id}", production.UpdateSpool)
+		router.HandleFunc("POST /api/v1/admin/production/spools/{id}/adjust", production.AdjustSpool)
+		router.HandleFunc("POST /api/v1/admin/production/spools/{id}/quarantine", production.QuarantineSpool)
 	}
 	return middleware.CORS(frontendOrigin)(router)
 }

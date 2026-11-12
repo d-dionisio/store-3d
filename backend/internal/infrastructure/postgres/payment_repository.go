@@ -337,6 +337,14 @@ func (r *PaymentRepository) Reconcile(ctx context.Context, w domain.Webhook, p d
 			return e
 		}
 	}
+	// The database function owns the financial gate and idempotency. Calling it
+	// for every paid reconciliation also repairs an older paid order whose jobs
+	// were not created, without duplicating jobs on repeated webhooks.
+	if status == "paid" {
+		if _, e = tx.Exec(ctx, `SELECT create_production_jobs_for_paid_order($1)`, orderID); e != nil {
+			return e
+		}
+	}
 	if p.RefundedCents > 0 {
 		refundStatus := "succeeded"
 		_, e = tx.Exec(ctx, `INSERT INTO payment_refunds(payment_id,payment_attempt_id,provider,external_refund_id,idempotency_key,amount_cents,status,reason,processed_at) VALUES($1,$2,'mercado_pago',null,'reconcile-'||$3,$4,$5,'Sincronizado pelo status do provedor',now()) ON CONFLICT(idempotency_key) DO UPDATE SET amount_cents=excluded.amount_cents,status=excluded.status,processed_at=now()`, paymentID, attemptID, p.ID, p.RefundedCents, refundStatus)

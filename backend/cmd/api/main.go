@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -70,9 +71,21 @@ func main() {
 	adminRepository := postgres.NewAdminRepository(pool)
 	adminService := adminapp.New(adminRepository)
 	appEnv := envOrDefault("APP_ENV", "development")
+	emailPublicURL := envOrDefault("EMAIL_PUBLIC_BASE_URL", envOrDefault("SITE_URL", "http://localhost:3000"))
+	if parsed, parseURLErr := url.Parse(emailPublicURL); appEnv == "production" && (parseURLErr != nil || parsed.Scheme != "https" || parsed.Host == "") {
+		slog.Error("EMAIL_PUBLIC_BASE_URL must be an absolute HTTPS URL in production")
+		os.Exit(1)
+	}
 	var identityMailer identityapp.Mailer = mail.Unavailable{}
 	var customerMailer customerapp.Mailer = mail.Unavailable{}
-	if appEnv == "development" && envOrDefault("EMAIL_PROVIDER", "disabled") == "development" {
+	var emailOutbox *mail.Outbox
+	emailKeyVersion, emailVersionErr := strconv.ParseInt(envOrDefault("EMAIL_OUTBOX_KEY_VERSION", "1"), 10, 16)
+	emailCipher, emailCipherErr := mail.NewOutboxCipher(os.Getenv("EMAIL_OUTBOX_ENCRYPTION_KEY"), int16(emailKeyVersion))
+	if emailVersionErr == nil && emailCipherErr == nil {
+		emailOutbox = mail.NewOutbox(pool, emailCipher)
+		customerMailer = emailOutbox
+		identityMailer = emailOutbox
+	} else if appEnv == "development" && envOrDefault("EMAIL_PROVIDER", "disabled") == "development" {
 		developmentMailer := mail.Development{}
 		customerMailer = developmentMailer
 		identityMailer = developmentMailer
@@ -97,7 +110,7 @@ func main() {
 	}
 	mfaCipher, cipherErr := securityauth.NewKeyring(mfaKeyVersion, mfaKeys)
 	if cipherErr == nil {
-		identityService = identityapp.New(postgres.NewIdentityRepository(pool), identityMailer, mfaCipher, envOrDefault("SITE_URL", "http://localhost:3000"))
+		identityService = identityapp.New(postgres.NewIdentityRepository(pool), identityMailer, mfaCipher, emailPublicURL)
 		if reauthTTL, ttlErr := time.ParseDuration(envOrDefault("AUTH_REAUTH_TTL", "5m")); ttlErr == nil {
 			identityService.SetReauthenticationTTL(reauthTTL)
 		}
@@ -111,10 +124,11 @@ func main() {
 		slog.Warn("MFA encryption is not configured; password and administrative login endpoints fail closed")
 	}
 	adminHandler := handlers.NewAdminHandler(adminService, appEnv == "production", identityService)
+	adminRepository.SetEmailOutbox(emailOutbox)
 	editorialService := editorialapp.New(postgres.NewEditorialRepository(pool), catalogRepository)
 	editorialHandler := handlers.NewEditorialHandler(editorialService, adminService)
 	customerRepository := postgres.NewCustomerRepository(pool)
-	customerService := customerapp.New(customerRepository, customerMailer, envOrDefault("FRONTEND_ORIGIN", "http://localhost:3000"))
+	customerService := customerapp.New(customerRepository, customerMailer, emailPublicURL)
 	customerHandler := handlers.NewCustomerHandler(customerService, appEnv == "production", identityService)
 	shippingRepository := postgres.NewShippingRepository(pool)
 	var shippingProvider shippingapp.Provider = melhorenvio.Unavailable{}
@@ -139,6 +153,7 @@ func main() {
 	shippingService := shippingapp.New(shippingRepository, shippingProvider, os.Getenv("MELHOR_ENVIO_ORIGIN_POSTAL_CODE"), quoteTTL)
 	shippingHandler := handlers.NewShippingHandler(shippingService, customerService, adminapp.New(adminRepository))
 	paymentRepository := postgres.NewPaymentRepository(pool)
+	paymentRepository.SetEmailOutbox(emailOutbox)
 	var paymentProvider paymentapp.Provider = mercadopago.Unavailable{}
 	mpEnvironment := envOrDefault("MERCADO_PAGO_ENVIRONMENT", "sandbox")
 	mpTokenKey, mpSecretKey := "MERCADO_PAGO_SANDBOX_ACCESS_TOKEN", "MERCADO_PAGO_SANDBOX_WEBHOOK_SECRET"
@@ -164,9 +179,13 @@ func main() {
 	productionService := productionapp.New(postgres.NewProductionRepository(pool))
 	productionHandler := handlers.NewProductionHandler(productionService, adminService)
 
+	baseHandler := apihttp.NewHandlerCompleteWithProduction(frontendOrigin, databaseHealth, catalogHandler, quoteHandler, adminHandler, customerHandler, shippingHandler, paymentHandler, productionHandler, editorialHandler)
+	rootHandler := http.NewServeMux()
+	rootHandler.HandleFunc("POST /api/v1/webhooks/resend", mail.ResendWebhook(pool, os.Getenv("RESEND_WEBHOOK_SECRET")))
+	rootHandler.Handle("/", baseHandler)
 	server := &http.Server{
 		Addr:              net.JoinHostPort(host, port),
-		Handler:           apihttp.NewHandlerCompleteWithProduction(frontendOrigin, databaseHealth, catalogHandler, quoteHandler, adminHandler, customerHandler, shippingHandler, paymentHandler, productionHandler, editorialHandler),
+		Handler:           rootHandler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,

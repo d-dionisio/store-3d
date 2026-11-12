@@ -8,13 +8,18 @@ import (
 	"errors"
 	app "example.com/loja-3d/backend/internal/application/payment"
 	domain "example.com/loja-3d/backend/internal/domain/payment"
+	"example.com/loja-3d/backend/internal/infrastructure/mail"
 	"github.com/jackc/pgx/v5"
 	"time"
 )
 
-type PaymentRepository struct{ pool DBTXPool }
+type PaymentRepository struct {
+	pool        DBTXPool
+	emailOutbox *mail.Outbox
+}
 
-func NewPaymentRepository(pool DBTXPool) *PaymentRepository { return &PaymentRepository{pool} }
+func NewPaymentRepository(pool DBTXPool) *PaymentRepository    { return &PaymentRepository{pool: pool} }
+func (r *PaymentRepository) SetEmailOutbox(value *mail.Outbox) { r.emailOutbox = value }
 
 func (r *PaymentRepository) ReserveCard(ctx context.Context, userID, ref string, input domain.CardInput) (domain.CreateCardRequest, *domain.Card, error) {
 	tx, err := r.pool.Begin(ctx)
@@ -275,12 +280,12 @@ func (r *PaymentRepository) Reconcile(ctx context.Context, w domain.Webhook, p d
 		return e
 	}
 	defer tx.Rollback(ctx)
-	var attemptID, paymentID, orderID, ref, currency, current string
+	var attemptID, paymentID, orderID, ref, currency, current, recipient string
 	var amount int64
 	var previousUpdated *time.Time
-	e = tx.QueryRow(ctx, `SELECT a.id,p.id,o.id,o.order_number,p.currency,p.status,p.amount_cents,a.provider_updated_at FROM payment_attempts a JOIN payments p ON p.id=a.payment_id JOIN orders o ON o.id=p.order_id WHERE a.provider='mercado_pago' AND a.external_payment_id=$1 FOR UPDATE OF a,p,o`, p.ID).Scan(&attemptID, &paymentID, &orderID, &ref, &currency, &current, &amount, &previousUpdated)
+	e = tx.QueryRow(ctx, `SELECT a.id,p.id,o.id,o.order_number,p.currency,p.status,p.amount_cents,a.provider_updated_at,u.email FROM payment_attempts a JOIN payments p ON p.id=a.payment_id JOIN orders o ON o.id=p.order_id JOIN users u ON u.id=o.user_id WHERE a.provider='mercado_pago' AND a.external_payment_id=$1 FOR UPDATE OF a,p,o`, p.ID).Scan(&attemptID, &paymentID, &orderID, &ref, &currency, &current, &amount, &previousUpdated, &recipient)
 	if errors.Is(e, pgx.ErrNoRows) {
-		e = tx.QueryRow(ctx, `SELECT a.id,p.id,o.id,o.order_number,p.currency,p.status,p.amount_cents,a.provider_updated_at FROM orders o JOIN payments p ON p.order_id=o.id JOIN payment_attempts a ON a.payment_id=p.id WHERE o.order_number=$1 AND a.provider='mercado_pago' AND a.external_payment_id IS NULL ORDER BY a.created_at DESC LIMIT 1 FOR UPDATE OF a,p,o`, p.ExternalReference).Scan(&attemptID, &paymentID, &orderID, &ref, &currency, &current, &amount, &previousUpdated)
+		e = tx.QueryRow(ctx, `SELECT a.id,p.id,o.id,o.order_number,p.currency,p.status,p.amount_cents,a.provider_updated_at,u.email FROM orders o JOIN users u ON u.id=o.user_id JOIN payments p ON p.order_id=o.id JOIN payment_attempts a ON a.payment_id=p.id WHERE o.order_number=$1 AND a.provider='mercado_pago' AND a.external_payment_id IS NULL ORDER BY a.created_at DESC LIMIT 1 FOR UPDATE OF a,p,o`, p.ExternalReference).Scan(&attemptID, &paymentID, &orderID, &ref, &currency, &current, &amount, &previousUpdated, &recipient)
 		if e == nil {
 			_, e = tx.Exec(ctx, `UPDATE payment_attempts SET external_payment_id=$2 WHERE id=$1`, attemptID, p.ID)
 		}
@@ -335,6 +340,11 @@ func (r *PaymentRepository) Reconcile(ctx context.Context, w domain.Webhook, p d
 		_, e = tx.Exec(ctx, `INSERT INTO order_status_events(order_id,status,description,metadata) VALUES($1,'confirmed','Pagamento confirmado pelo Mercado Pago',jsonb_build_object('external_payment_id',$2::text))`, orderID, p.ID)
 		if e != nil {
 			return e
+		}
+		if r.emailOutbox != nil {
+			if e = r.emailOutbox.EnqueueTx(ctx, tx, recipient, "order_confirmed", mail.TemplateData{Reference: ref, Status: "confirmed"}); e != nil {
+				return e
+			}
 		}
 	}
 	// The database function owns the financial gate and idempotency. Calling it

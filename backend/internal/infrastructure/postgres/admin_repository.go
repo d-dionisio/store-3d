@@ -6,6 +6,7 @@ import (
 	"errors"
 	app "example.com/loja-3d/backend/internal/application/admin"
 	domain "example.com/loja-3d/backend/internal/domain/admin"
+	"example.com/loja-3d/backend/internal/infrastructure/mail"
 	"fmt"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -13,9 +14,13 @@ import (
 	"time"
 )
 
-type AdminRepository struct{ pool *pgxpool.Pool }
+type AdminRepository struct {
+	pool        *pgxpool.Pool
+	emailOutbox *mail.Outbox
+}
 
 func NewAdminRepository(pool *pgxpool.Pool) *AdminRepository { return &AdminRepository{pool: pool} }
+func (r *AdminRepository) SetEmailOutbox(value *mail.Outbox) { r.emailOutbox = value }
 func (r *AdminRepository) FindUserByEmail(ctx context.Context, email string) (domain.User, error) {
 	var u domain.User
 	err := r.pool.QueryRow(ctx, `SELECT id,email,full_name,password_hash,role,status,locked_until FROM admin_users WHERE lower(email)=lower($1)`, email).Scan(&u.ID, &u.Email, &u.FullName, &u.PasswordHash, &u.Role, &u.Status, &u.LockedUntil)

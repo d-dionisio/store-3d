@@ -6,6 +6,7 @@ import (
 	"time"
 
 	domain "example.com/loja-3d/backend/internal/domain/admin"
+	"example.com/loja-3d/backend/internal/infrastructure/mail"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -78,8 +79,8 @@ func (r *AdminRepository) SendProposal(ctx context.Context, ref, user string) er
 		return err
 	}
 	defer tx.Rollback(ctx)
-	var quoteID string
-	err = tx.QueryRow(ctx, `SELECT id FROM quotes WHERE quote_number=$1 AND status='under_review' AND EXISTS(SELECT 1 FROM quote_files WHERE quote_id=quotes.id) AND NOT EXISTS(SELECT 1 FROM quote_files WHERE quote_id=quotes.id AND security_status<>'clean') FOR UPDATE`, ref).Scan(&quoteID)
+	var quoteID, recipient string
+	err = tx.QueryRow(ctx, `SELECT q.id,coalesce(u.email,q.customer_email) FROM quotes q LEFT JOIN users u ON u.id=q.user_id WHERE q.quote_number=$1 AND q.status='under_review' AND EXISTS(SELECT 1 FROM quote_files WHERE quote_id=q.id) AND NOT EXISTS(SELECT 1 FROM quote_files WHERE quote_id=q.id AND security_status<>'clean') FOR UPDATE OF q`, ref).Scan(&quoteID, &recipient)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ErrInvalidTransition
 	}
@@ -101,6 +102,15 @@ func (r *AdminRepository) SendProposal(ctx context.Context, ref, user string) er
 	}
 	if err = auditProposal(ctx, tx, user, "quote.proposal.send", ref); err != nil {
 		return err
+	}
+	if r.emailOutbox != nil {
+		if err = r.emailOutbox.EnqueueTx(ctx, tx, recipient, "quote_proposal", mail.TemplateData{Reference: ref}); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `UPDATE quote_proposals SET notification_status='pending' WHERE quote_id=$1 AND status='sent'`, quoteID)
+		if err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
 }

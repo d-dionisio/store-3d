@@ -489,3 +489,11 @@ Ainda não foram implementados:
 - Rate limiting compartilhado usa UPSERT atômico; o limitador em memória permanece como defesa local. Nenhum header de encaminhamento não autenticado determina o sujeito.
 - Runbooks, rollback e pendências estão em `docs/authentication-hardening.md` e `docs/access-operations.md`.
 
+## Etapa 7.5.3 — e-mail transacional
+
+- `email_outbox` é a fonte operacional de entrega. Payloads, inclusive links sensíveis e destinatário, usam AES-256-GCM com chave separada; apenas o hash do destinatário fica consultável.
+- O worker PostgreSQL usa `SKIP LOCKED`, lock recuperável, backoff com jitter, limite de tentativas, expiração e idempotência estável. Resend implementa apenas `EmailSender` e não participa das regras de negócio.
+- Proposta enviada e pagamento confirmado gravam a intenção na mesma transação do evento comercial. Webhooks financeiros repetidos não criam e-mails duplicados.
+- O webhook Resend valida o corpo bruto segundo o esquema Svix e mantém deduplicação, estados de entrega e supressões. A rota não é exposta automaticamente.
+- Limites, DNS, rollback e a pendência de atomicidade dos tokens de autenticação estão em `docs/transactional-email.md`.
+

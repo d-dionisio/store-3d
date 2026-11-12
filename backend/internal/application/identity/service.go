@@ -84,6 +84,9 @@ type Mailer interface {
 	SendVerification(context.Context, string, string) error
 	SendPasswordReset(context.Context, string, string) error
 }
+type securityMailer interface {
+	SendSecurityEvent(context.Context, string, string) error
+}
 type Service struct {
 	repo            Repository
 	mailer          Mailer
@@ -361,6 +364,11 @@ func (s *Service) CompleteMFA(ctx context.Context, raw, code, recovery, ip, ua s
 	if e != nil {
 		return CompleteResult{}, ErrUnauthorized
 	}
+	if len(codes) > 0 {
+		if notifier, ok := s.mailer.(securityMailer); ok {
+			_ = notifier.SendSecurityEvent(ctx, session.Email, "mfa_changed")
+		}
+	}
 	return CompleteResult{Session: session, SessionToken: sessionRaw, CSRFToken: csrfRaw, RecoveryCodes: codes}, nil
 }
 func (s *Service) Status(ctx context.Context, kind, id string) (bool, int, error) {
@@ -394,6 +402,11 @@ func (s *Service) Disable(ctx context.Context, kind, id string) error {
 	err := s.repo.DisableMFA(ctx, kind, id)
 	if err == nil {
 		_ = s.repo.SecurityEvent(ctx, kind, &id, kind+".mfa.disable", "success", "")
+		if notifier, ok := s.mailer.(securityMailer); ok {
+			if identity, findErr := s.repo.FindIdentityByID(ctx, kind, id); findErr == nil {
+				_ = notifier.SendSecurityEvent(ctx, identity.Email, "mfa_changed")
+			}
+		}
 	}
 	return err
 }
@@ -419,6 +432,11 @@ func (s *Service) SetPassword(ctx context.Context, kind, id, password string) er
 		return e
 	}
 	_ = s.repo.SecurityEvent(ctx, kind, &id, kind+".password.change", "success", "")
+	if notifier, ok := s.mailer.(securityMailer); ok {
+		if identity, findErr := s.repo.FindIdentityByID(ctx, kind, id); findErr == nil {
+			_ = notifier.SendSecurityEvent(ctx, identity.Email, "password_changed")
+		}
+	}
 	return nil
 }
 func (s *Service) HasPassword(ctx context.Context, kind, id string) bool {

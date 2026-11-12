@@ -245,6 +245,17 @@ Administradores entram em `/admin/login` com senha e obrigatoriamente concluem T
 
 O magic link existente permanece disponível para clientes sem MFA. O adaptador de e-mail de desenvolvimento não entrega mensagens nem imprime tokens: cadastro, verificação e recuperação reais exigem um provedor transacional configurado. Consulte `docs/authentication-mfa.md` para política, endpoints, rotação de chave e pendências operacionais.
 
+### Worker de e-mail transacional
+
+A migration 25 adiciona uma outbox cifrada. Configure as variáveis `EMAIL_*` e `RESEND_*` descritas em `docs/transactional-email.md`. Com `EMAIL_DELIVERY_ENABLED=false`, nenhuma mensagem externa é enviada. Após verificar domínio, remetente e credenciais em ambiente autorizado:
+
+```powershell
+cd backend
+go run ./cmd/email-worker
+```
+
+O worker é independente da API; reiniciar a API não perde mensagens pendentes. A rota interna de webhook é `POST /api/v1/webhooks/resend`, mas não deve ser publicada sem proxy HTTPS dedicado e segredo Svix configurado.
+
 Configure o adaptador local somente durante desenvolvimento:
 
 ```dotenv

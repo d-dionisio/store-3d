@@ -46,6 +46,8 @@ func adminError(w http.ResponseWriter, err error) {
 		writeQuoteJSON(w, 400, map[string]any{"error": map[string]string{"code": "invalid_request", "message": "Dados inválidos."}})
 	case errors.Is(err, app.ErrConflict):
 		writeQuoteJSON(w, 409, map[string]any{"error": map[string]string{"code": "conflict", "message": "O e-mail informado já pertence a outro usuário."}})
+	case errors.Is(err, app.ErrLastAdmin):
+		writeQuoteJSON(w, 409, map[string]any{"error": map[string]string{"code": "last_active_admin", "message": "O último administrador ativo não pode ser bloqueado ou rebaixado."}})
 	case errors.Is(err, domain.ErrInvalidPricing):
 		writeQuoteJSON(w, 400, map[string]any{"error": map[string]string{"code": "invalid_pricing", "message": "Composição de preço inválida."}})
 	case errors.Is(err, domain.ErrInvalidTransition):

@@ -7,14 +7,16 @@ type User struct {
 	LockedUntil                                     *time.Time
 }
 type InternalUser struct {
-	ID          string     `json:"id"`
-	Email       string     `json:"email"`
-	FullName    string     `json:"full_name"`
-	Role        string     `json:"role"`
-	Status      string     `json:"status"`
-	LastLoginAt *time.Time `json:"last_login_at"`
-	CreatedAt   time.Time  `json:"created_at"`
-	UpdatedAt   time.Time  `json:"updated_at"`
+	ID             string     `json:"id"`
+	Email          string     `json:"email"`
+	FullName       string     `json:"full_name"`
+	Role           string     `json:"role"`
+	Status         string     `json:"status"`
+	LastLoginAt    *time.Time `json:"last_login_at"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+	MFAStatus      string     `json:"mfa_status"`
+	ActiveSessions int        `json:"active_sessions"`
 }
 type Session struct {
 	ID, UserID, Email, FullName, Role, CSRFHash, AuthenticationLevel string

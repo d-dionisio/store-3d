@@ -55,7 +55,11 @@ func (r *AdminRepository) RevokeSession(ctx context.Context, id string) error {
 	return err
 }
 func (r *AdminRepository) ListInternalUsers(ctx context.Context) ([]domain.InternalUser, error) {
-	rows, err := r.pool.Query(ctx, `SELECT id,email,full_name,role,status,last_login_at,created_at,updated_at FROM admin_users ORDER BY full_name,email`)
+	rows, err := r.pool.Query(ctx, `SELECT u.id,u.email,u.full_name,u.role,u.status,u.last_login_at,u.created_at,u.updated_at,
+		CASE WHEN EXISTS(SELECT 1 FROM auth_mfa_factors f WHERE f.admin_user_id=u.id AND f.enabled_at IS NOT NULL) THEN 'enabled'
+			WHEN EXISTS(SELECT 1 FROM auth_mfa_factors f WHERE f.admin_user_id=u.id) THEN 'pending' ELSE 'not_configured' END,
+		(SELECT count(*) FROM admin_sessions s WHERE s.admin_user_id=u.id AND s.revoked_at IS NULL AND s.expires_at>now())
+		FROM admin_users u ORDER BY u.full_name,u.email`)
 	if err != nil {
 		return nil, err
 	}
@@ -63,7 +67,7 @@ func (r *AdminRepository) ListInternalUsers(ctx context.Context) ([]domain.Inter
 	users := []domain.InternalUser{}
 	for rows.Next() {
 		var user domain.InternalUser
-		if err = rows.Scan(&user.ID, &user.Email, &user.FullName, &user.Role, &user.Status, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt); err != nil {
+		if err = rows.Scan(&user.ID, &user.Email, &user.FullName, &user.Role, &user.Status, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt, &user.MFAStatus, &user.ActiveSessions); err != nil {
 			return nil, err
 		}
 		users = append(users, user)
@@ -98,6 +102,24 @@ func (r *AdminRepository) UpdateInternalUser(ctx context.Context, id, role, stat
 		return domain.InternalUser{}, err
 	}
 	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(74100322)`); err != nil {
+		return domain.InternalUser{}, err
+	}
+	var previousRole, previousStatus string
+	if err = tx.QueryRow(ctx, `SELECT role,status FROM admin_users WHERE id=$1 FOR UPDATE`, id).Scan(&previousRole, &previousStatus); errors.Is(err, pgx.ErrNoRows) {
+		return domain.InternalUser{}, app.ErrNotFound
+	} else if err != nil {
+		return domain.InternalUser{}, err
+	}
+	if previousRole == "admin" && previousStatus == "active" && (role != "admin" || status != "active") {
+		var activeAdmins int
+		if err = tx.QueryRow(ctx, `SELECT count(*) FROM admin_users WHERE role='admin' AND status='active'`).Scan(&activeAdmins); err != nil {
+			return domain.InternalUser{}, err
+		}
+		if activeAdmins <= 1 {
+			return domain.InternalUser{}, app.ErrLastAdmin
+		}
+	}
 	var user domain.InternalUser
 	err = tx.QueryRow(ctx, `UPDATE admin_users SET role=$2,status=$3,updated_at=now() WHERE id=$1 RETURNING id,email,full_name,role,status,last_login_at,created_at,updated_at`, id, role, status).Scan(&user.ID, &user.Email, &user.FullName, &user.Role, &user.Status, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -116,6 +138,7 @@ func (r *AdminRepository) UpdateInternalUser(ctx context.Context, id, role, stat
 		return user, err
 	}
 	err = tx.Commit(ctx)
+	user.MFAStatus = "not_configured"
 	return user, err
 }
 func (r *AdminRepository) ResetInternalUserPassword(ctx context.Context, id, passwordHash, actorID string) error {

@@ -1,0 +1,3 @@
+import type{AdminRole,InternalUser}from"@/services/admin-api";
+export type UserFilters={search:string;role:""|AdminRole;status:""|"active"|"blocked";page:number;limit:number};
+export function filterUsers(users:InternalUser[],filters:UserFilters){const query=filters.search.trim().toLocaleLowerCase("pt-BR");const filtered=users.filter(user=>(!query||`${user.full_name} ${user.email}`.toLocaleLowerCase("pt-BR").includes(query))&&(!filters.role||user.role===filters.role)&&(!filters.status||user.status===filters.status));const pages=Math.max(1,Math.ceil(filtered.length/filters.limit));const page=Math.min(Math.max(1,filters.page),pages);return{items:filtered.slice((page-1)*filters.limit,page*filters.limit),total:filtered.length,page,pages}}

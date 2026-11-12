@@ -1,0 +1,3 @@
+import{AdminShell}from"@/components/admin/admin-shell";import{AdminUsersManager}from"@/components/admin/admin-users-manager";import{adminCookie,adminGuard}from"@/lib/admin-auth";import{getInternalUsers}from"@/services/admin-api";
+export const dynamic="force-dynamic";
+export default async function AdminUsersPage(){let users;try{users=await getInternalUsers(await adminCookie())}catch(error){adminGuard(error)}return <AdminShell><header className="admin-header"><span>Segurança e acesso</span><h1>Usuários internos</h1><p>Contas, permissões e sessões sob autenticação, MFA e auditoria existentes.</p></header><AdminUsersManager initialUsers={users}/></AdminShell>}

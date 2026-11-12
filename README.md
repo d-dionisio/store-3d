@@ -79,6 +79,8 @@ O comando solicita e-mail, nome e confirmação de senha sem ecoá-la. Ele exige
 
 Administradores autenticados podem gerenciar contas pelos endpoints `/api/v1/admin/users`. Toda mutação exige `X-CSRF-Token`; reset de senha, bloqueio e revogação encerram sessões conforme documentado em `docs/access-operations.md`.
 
+Com uma sessão administrativa e MFA válidos, acesse `http://localhost:3000/admin/usuarios`. A interface reutiliza os endpoints, RBAC, CSRF e reautenticação existentes; não cria outro sistema de autenticação. Consulte `docs/admin-user-management.md` para operações, permissões e limitações.
+
 ### Migrations
 
 Com o PostgreSQL ativo, execute a partir de `backend`:

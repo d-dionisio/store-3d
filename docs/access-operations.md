@@ -25,6 +25,8 @@ As rotas abaixo exigem cookie `loja3d_admin_session`; mutações também exigem 
 
 Roles válidas: `admin`, `quote_viewer`, `production_operator` e `production_manager`. Não é permitido ao administrador remover a própria role ou bloquear a própria conta. Bloqueio e reset de senha revogam sessões; todas as operações geram `admin_audit_events`.
 
+A interface correspondente fica em `/admin/usuarios`. Cada mutação abre o fluxo existente de reautenticação e envia a evidência de uso único apenas na chamada imediata; ela não é persistida no navegador. O PostgreSQL também impede bloquear ou rebaixar o último administrador ativo. Consulte `docs/admin-user-management.md`.
+
 ## Clientes
 
 O cliente solicita um magic link em `/minha-conta`. A resposta pública é sempre genérica. Tokens têm 256 bits, somente o SHA-256 é armazenado, expiram em 15 minutos e são consumidos atomicamente uma única vez. Há limites por IP e por e-mail. A verificação cria sessão revogável em cookie HTTP-only, SameSite Lax e Secure em produção.

@@ -18,6 +18,7 @@ var ErrForbidden = errors.New("forbidden")
 var ErrNotFound = errors.New("not found")
 var ErrInvalid = errors.New("invalid")
 var ErrConflict = errors.New("conflict")
+var ErrLastAdmin = errors.New("last active administrator")
 
 type Repository interface {
 	FindUserByEmail(context.Context, string) (domain.User, error)

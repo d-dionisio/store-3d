@@ -22,3 +22,14 @@ function csrf(){if(typeof window==="undefined")return "";return sessionStorage.g
 export async function startQuoteAnalysis(reference:string){await request(`/quotes/${encodeURIComponent(reference)}/analysis`,{method:"POST",headers:{"X-CSRF-Token":csrf()}})}
 export async function saveQuotePricing(reference:string,value:PricingInput){await request(`/quotes/${encodeURIComponent(reference)}/pricing`,{method:"PUT",headers:{"X-CSRF-Token":csrf()},body:JSON.stringify(value)})}
 export async function sendQuoteProposal(reference:string){await request(`/quotes/${encodeURIComponent(reference)}/proposal`,{method:"POST",headers:{"X-CSRF-Token":csrf()}})}
+
+export const adminRoles=["admin","quote_viewer","production_operator","production_manager"] as const;
+export type AdminRole=typeof adminRoles[number];
+export type InternalUser={id:string;email:string;full_name:string;role:AdminRole;status:"active"|"blocked";mfa_status:"enabled"|"pending"|"not_configured";active_sessions:number;last_login_at:string|null;created_at:string;updated_at:string};
+export async function getInternalUsers(cookie?:string){return request<InternalUser[]>("/users",{headers:cookie?{Cookie:cookie}:undefined})}
+function sensitiveHeaders(proof:string){return{"X-CSRF-Token":csrf(),"X-Reauthentication-Token":proof}}
+async function command(path:string,init:RequestInit){const response=await fetch(`${getApiUrl()}/api/v1/admin${path}`,{...init,credentials:"include",headers:{Accept:"application/json","Content-Type":"application/json",...init.headers},cache:"no-store"});if(response.ok)return;const body=await response.json().catch(()=>({})) as {error?:{message?:string}};throw new AdminApiError(body.error?.message??"Falha na operação administrativa.",response.status)}
+export async function createInternalUser(value:{email:string;full_name:string;password:string;role:AdminRole},proof:string){return request<InternalUser>("/users",{method:"POST",headers:sensitiveHeaders(proof),body:JSON.stringify(value)})}
+export async function updateInternalUser(id:string,value:{role:AdminRole;status:"active"|"blocked"},proof:string){return request<InternalUser>(`/users/${encodeURIComponent(id)}`,{method:"PATCH",headers:sensitiveHeaders(proof),body:JSON.stringify(value)})}
+export async function resetInternalUserPassword(id:string,password:string,proof:string){return command(`/users/${encodeURIComponent(id)}/password`,{method:"PUT",headers:sensitiveHeaders(proof),body:JSON.stringify({password})})}
+export async function revokeInternalUserSessions(id:string,proof:string){return command(`/users/${encodeURIComponent(id)}/sessions/revoke`,{method:"POST",headers:sensitiveHeaders(proof)})}

@@ -123,6 +123,7 @@ Endpoints atuais:
 - Login, logout, dashboard, listagem e detalhe geram eventos em `admin_audit_events`.
 - Arquivos administrativos expõem apenas metadata; não há endpoint de download, chave de objeto ou URL assinada.
 - Gestão de usuários internos reutiliza a sessão administrativa e CSRF existentes. Somente `admin` cria contas, altera roles/status, redefine senhas ou revoga sessões; todas essas operações são auditadas.
+- `/admin/usuarios` é apenas uma interface sobre essa API: mutações consomem a evidência de reautenticação vinculada à sessão, mantida somente em memória. A consulta deriva estado do MFA e sessões ativas sem expor segredos. Um advisory lock protege o último administrador ativo contra rebaixamento ou bloqueio concorrente.
 - O adaptador de e-mail de desenvolvimento nunca registra magic links, tokens ou dados pessoais. Acesso real de clientes permanece condicionado a um adaptador transacional configurado.
 
 ## Migrations

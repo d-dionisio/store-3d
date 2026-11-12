@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -19,12 +20,56 @@ func adminPool(t *testing.T) *pgxpool.Pool {
 	if dsn == "" {
 		t.Skip("TEST_DATABASE_URL not set")
 	}
+	config, parseErr := pgxpool.ParseConfig(dsn)
+	if parseErr != nil || !strings.HasSuffix(strings.ToLower(config.ConnConfig.Database), "_test") {
+		t.Fatal("TEST_DATABASE_URL must reference a database ending in _test")
+	}
 	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(pool.Close)
 	return pool
+}
+
+func TestLastActiveAdministratorGuardIntegration(t *testing.T) {
+	ctx := context.Background()
+	base := adminPool(t)
+	schema := "last_admin_" + time.Now().Format("150405000000000")
+	identifier := pgx.Identifier{schema}.Sanitize()
+	_, err := base.Exec(ctx, `CREATE SCHEMA `+identifier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = base.Exec(ctx, `DROP SCHEMA IF EXISTS `+identifier+` CASCADE`) })
+	_, err = base.Exec(ctx, `CREATE TABLE `+identifier+`.admin_users (id UUID PRIMARY KEY DEFAULT gen_random_uuid(),email TEXT NOT NULL,full_name TEXT NOT NULL,password_hash TEXT NOT NULL,role TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'active',last_login_at TIMESTAMPTZ,created_at TIMESTAMPTZ NOT NULL DEFAULT now(),updated_at TIMESTAMPTZ NOT NULL DEFAULT now()); CREATE TABLE `+identifier+`.admin_sessions (admin_user_id UUID,revoked_at TIMESTAMPTZ,expires_at TIMESTAMPTZ); CREATE TABLE `+identifier+`.admin_audit_events (admin_user_id UUID,action TEXT,resource_type TEXT,resource_id TEXT,outcome TEXT,metadata JSONB)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := pgxpool.ParseConfig(os.Getenv("TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.ConnConfig.RuntimeParams["search_path"] = schema
+	pool, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	var onlyID string
+	if err = pool.QueryRow(ctx, `INSERT INTO admin_users(email,full_name,password_hash,role,status) VALUES('only@example.test','Only Admin',repeat('x',60),'admin','active') RETURNING id`).Scan(&onlyID); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewAdminRepository(pool)
+	if _, err = repo.UpdateInternalUser(ctx, onlyID, "quote_viewer", "active", onlyID); !errors.Is(err, app.ErrLastAdmin) {
+		t.Fatalf("last administrator was not protected: %v", err)
+	}
+	if _, err = pool.Exec(ctx, `INSERT INTO admin_users(email,full_name,password_hash,role,status) VALUES('second@example.test','Second Admin',repeat('x',60),'admin','active')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = repo.UpdateInternalUser(ctx, onlyID, "quote_viewer", "active", onlyID); err != nil {
+		t.Fatalf("demotion with another active administrator failed: %v", err)
+	}
 }
 func TestBootstrapAdminOneShotIntegration(t *testing.T) {
 	ctx := context.Background()

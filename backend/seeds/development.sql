@@ -56,7 +56,7 @@ ON CONFLICT (id) DO UPDATE SET price_cents = EXCLUDED.price_cents, stock_quantit
 
 INSERT INTO product_images (id, product_id, storage_provider, object_key, public_url, alt_text, media_type, sort_order, is_primary) VALUES
 ('80000000-0000-0000-0000-000000000001', '60000000-0000-0000-0000-000000000001', 'development', 'products/vaso-orbita.png', '/images/product-collection.png', 'Vaso Órbita demonstrativo em impressão 3D', 'image/png', 0, TRUE),
-('80000000-0000-0000-0000-000000000002', '60000000-0000-0000-0000-000000000002', 'development', 'products/luminaria-aurora.png', '/images/hero-studio.png', 'Luminária Aurora demonstrativa', 'image/png', 0, TRUE),
+('80000000-0000-0000-0000-000000000002', '60000000-0000-0000-0000-000000000002', 'development', 'products/luminaria-aurora.png', '/images/luminaria-aurora-v2.png', 'Luminária Aurora acesa em acabamento areia', 'image/png', 0, TRUE),
 ('80000000-0000-0000-0000-000000000003', '60000000-0000-0000-0000-000000000003', 'development', 'products/estrela-natalina.png', '/images/product-collection.png', 'Estrela natalina demonstrativa', 'image/png', 0, TRUE),
 ('80000000-0000-0000-0000-000000000004', '60000000-0000-0000-0000-000000000004', 'development', 'products/presepio-luz.png', '/images/product-collection.png', 'Presépio Luz demonstrativo', 'image/png', 0, TRUE),
 ('80000000-0000-0000-0000-000000000005', '60000000-0000-0000-0000-000000000005', 'development', 'products/organizador-nexo.png', '/images/product-collection.png', 'Organizador Nexo demonstrativo', 'image/png', 0, TRUE)

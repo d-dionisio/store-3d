@@ -428,3 +428,16 @@ Ainda não foram implementados:
 - O showroom usa uma folha de estilos restrita ao segmento `/catalogo`, com tokens próprios de ivory, sand, taupe, graphite e white. O Design System global, checkout e painel administrativo não são alterados.
 - Produtos repetidos entre edições são deduplicados apenas para as seleções visuais da home. Isso não cria coleção, preço ou disponibilidade paralelos.
 
+## Etapa 10.2 — schema e domínio de produção 3D
+
+- `production_jobs` representa a obrigação produtiva ligada ao item do pedido; `production_runs` representa cada tentativa física. Reimpressões são novas execuções ligadas por `reprint_of_run_id`, preservando métricas e falhas anteriores.
+- As colunas legadas de impressora, tempo e material permanecem temporariamente em `production_jobs`. A migration 20 copia seus valores para a primeira execução e cria um evento de migração, sem apagar histórico.
+- Um job só entra em `queued` pela função transacional `transition_production_job`. O trigger bloqueia atualizações diretas, valida concorrência otimista por `version` e, sob os mesmos locks, exige pedido confirmado/em produção, pagamento `paid`, valor integral, moeda idêntica e reembolso zero. `partially_refunded` nunca libera produção.
+- O status `in_production` é aceito apenas para permitir reimpressões de um pedido cujo primeiro ciclo já começou; estados cancelado, enviado ou entregue permanecem bloqueados.
+- `production_events` é append-only. Toda transição executada pelas funções oficiais preserva estado anterior, novo estado, horário, administrador e descrição. Eventos de migração podem não possuir administrador por serem ações do sistema.
+- `material_spools` mantém saldo e custo por quilograma. Inserir um consumo bloqueia a bobina, rejeita saldo insuficiente, debita consumo e desperdício atomicamente e grava o custo vigente como snapshot imutável. Uma execução pode usar várias bobinas.
+- Uma inspeção só pode ser registrada durante `quality_check`. Concluir uma execução exige inspeção aprovada; concluir o job exige pelo menos uma execução concluída e aprovada. Reimpressões exigem execução anterior falha ou cuja inspeção mais recente tenha sido rejeitada.
+- Impressoras começam com cadastro manual e tecnologia FDM. A estrutura contempla dimensões úteis e manutenção, sem integração automática com Bambu Lab nesta etapa.
+- Os papéis `production_operator` e `production_manager` são adicionados sem remover `admin` ou `quote_viewer`. O down converte esses papéis para `admin` antes de restaurar a constraint antiga, permitindo reversão determinística.
+- O domínio `internal/domain/production` não depende de HTTP, PostgreSQL ou bibliotecas externas. Ele replica as regras centrais para falhar cedo, enquanto o PostgreSQL continua sendo a última barreira transacional.
+

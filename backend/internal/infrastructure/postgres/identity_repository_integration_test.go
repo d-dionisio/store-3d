@@ -101,4 +101,17 @@ func TestIdentityRepositoryIntegration(t *testing.T) {
 	if successes.Load() != 1 {
 		t.Fatalf("concurrent recovery successes=%d", successes.Load())
 	}
+	reauthHash := tokenHash("reauth")
+	if e = repo.CreateReauthEvidence(ctx,"customer",identity.ID,session.ID,nil,"",reauthHash,time.Now().Add(time.Minute)); e != nil { t.Fatal(e) }
+	if e = repo.ConsumeReauthEvidence(ctx,"customer",session.ID,reauthHash); e != nil { t.Fatal(e) }
+	if e = repo.ConsumeReauthEvidence(ctx,"customer",session.ID,reauthHash); e == nil { t.Fatal("reused reauthentication evidence accepted") }
+	expiredHash := tokenHash("expired-reauth")
+	if e = repo.CreateReauthEvidence(ctx,"customer",identity.ID,session.ID,nil,"",expiredHash,time.Now().Add(20*time.Millisecond)); e != nil { t.Fatal(e) }
+	time.Sleep(30*time.Millisecond)
+	if e = repo.ConsumeReauthEvidence(ctx,"customer",session.ID,expiredHash); e == nil { t.Fatal("expired reauthentication evidence accepted") }
+	var allowed atomic.Int32
+	wg = sync.WaitGroup{}
+	for range 20 { wg.Add(1); go func(){ defer wg.Done(); ok,err:=repo.AllowRateLimit(ctx,"mfa",tokenHash("rate-subject"),5,time.Minute); if err==nil&&ok{allowed.Add(1)} }() }
+	wg.Wait()
+	if allowed.Load()!=5 { t.Fatalf("concurrent distributed rate limit allowed=%d",allowed.Load()) }
 }

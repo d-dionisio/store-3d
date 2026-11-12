@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -83,9 +84,26 @@ func main() {
 		os.Exit(1)
 	}
 	mfaKeyVersion := int16(mfaVersionValue)
-	mfaCipher, cipherErr := securityauth.NewCipher(os.Getenv("AUTH_MFA_ENCRYPTION_KEY"), mfaKeyVersion)
+	mfaKeys := map[int16]string{mfaKeyVersion: os.Getenv("AUTH_MFA_ENCRYPTION_KEY")}
+	for _, entry := range strings.Split(os.Getenv("AUTH_MFA_DECRYPTION_KEYS"), ",") {
+		parts := strings.SplitN(strings.TrimSpace(entry), ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		version, parseKeyErr := strconv.ParseInt(parts[0], 10, 16)
+		if parseKeyErr == nil && version > 0 && parts[1] != "" {
+			mfaKeys[int16(version)] = parts[1]
+		}
+	}
+	mfaCipher, cipherErr := securityauth.NewKeyring(mfaKeyVersion, mfaKeys)
 	if cipherErr == nil {
 		identityService = identityapp.New(postgres.NewIdentityRepository(pool), identityMailer, mfaCipher, envOrDefault("SITE_URL", "http://localhost:3000"))
+		if reauthTTL, ttlErr := time.ParseDuration(envOrDefault("AUTH_REAUTH_TTL", "5m")); ttlErr == nil {
+			identityService.SetReauthenticationTTL(reauthTTL)
+		}
+		if breachURL := strings.TrimSpace(os.Getenv("PASSWORD_BREACH_CHECK_URL")); breachURL != "" {
+			identityService.SetPasswordChecker(securityauth.KAnonymityChecker{BaseURL: breachURL, Client: &http.Client{Timeout: 3 * time.Second}, FailClosed: envOrDefault("PASSWORD_BREACH_FAILURE_MODE", "allow") == "deny"})
+		}
 	} else if appEnv == "production" {
 		slog.Error("MFA encryption configuration is required in production")
 		os.Exit(1)

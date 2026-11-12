@@ -131,6 +131,10 @@ func (h *AdminHandler) CreateInternalUser(w http.ResponseWriter, r *http.Request
 		adminError(w, err)
 		return
 	}
+	if err = h.consumeReauth(r, session.ID); err != nil {
+		identityError(w, err)
+		return
+	}
 	var body struct {
 		Email    string `json:"email"`
 		FullName string `json:"full_name"`
@@ -154,6 +158,10 @@ func (h *AdminHandler) UpdateInternalUser(w http.ResponseWriter, r *http.Request
 		adminError(w, err)
 		return
 	}
+	if err = h.consumeReauth(r, session.ID); err != nil {
+		identityError(w, err)
+		return
+	}
 	var body struct {
 		Role   string `json:"role"`
 		Status string `json:"status"`
@@ -175,6 +183,10 @@ func (h *AdminHandler) ResetInternalUserPassword(w http.ResponseWriter, r *http.
 		adminError(w, err)
 		return
 	}
+	if err = h.consumeReauth(r, session.ID); err != nil {
+		identityError(w, err)
+		return
+	}
 	var body struct {
 		Password string `json:"password"`
 	}
@@ -192,6 +204,10 @@ func (h *AdminHandler) RevokeInternalUserSessions(w http.ResponseWriter, r *http
 	session, err := h.mutationSession(r)
 	if err != nil {
 		adminError(w, err)
+		return
+	}
+	if err = h.consumeReauth(r, session.ID); err != nil {
+		identityError(w, err)
 		return
 	}
 	if err = h.service.RevokeInternalUserSessions(r.Context(), session, r.PathValue("id"), adminIP(r)); err != nil {

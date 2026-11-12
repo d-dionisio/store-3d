@@ -51,6 +51,7 @@ type CompleteResult struct {
 
 type Repository interface {
 	FindIdentity(context.Context, string, string) (Identity, error)
+	FindIdentityByID(context.Context, string, string) (Identity, error)
 	RegisterCustomer(context.Context, string, string, string, string, time.Time) (Identity, error)
 	CreateCustomerToken(context.Context, string, string, string, time.Time) error
 	ConsumeEmailVerification(context.Context, string) error
@@ -69,21 +70,46 @@ type Repository interface {
 	RevokeSessions(context.Context, string, string) error
 	RegenerateRecoveryCodes(context.Context, string, string, []string) error
 	SecurityEvent(context.Context, string, *string, string, string, string) error
+	CreateReauthEvidence(context.Context, string, string, string, *int64, string, string, time.Time) error
+	ConsumeReauthEvidence(context.Context, string, string, string) error
+	AllowRateLimit(context.Context, string, string, int, time.Duration) (bool, error)
 }
+
+func (s *Service) allow(ctx context.Context, scope, subject string, limit int, window time.Duration) bool {
+	ok, err := s.repo.AllowRateLimit(ctx, scope, security.TokenHash(subject), limit, window)
+	return err == nil && ok
+}
+
 type Mailer interface {
 	SendVerification(context.Context, string, string) error
 	SendPasswordReset(context.Context, string, string) error
 }
 type Service struct {
-	repo      Repository
-	mailer    Mailer
-	cipher    *security.Cipher
-	publicURL string
-	now       func() time.Time
+	repo            Repository
+	mailer          Mailer
+	cipher          *security.Cipher
+	publicURL       string
+	now             func() time.Time
+	reauthTTL       time.Duration
+	passwordChecker security.PasswordChecker
 }
 
 func New(repo Repository, mailer Mailer, cipher *security.Cipher, publicURL string) *Service {
-	return &Service{repo: repo, mailer: mailer, cipher: cipher, publicURL: strings.TrimRight(publicURL, "/"), now: time.Now}
+	return &Service{repo: repo, mailer: mailer, cipher: cipher, publicURL: strings.TrimRight(publicURL, "/"), now: time.Now, reauthTTL: 5 * time.Minute, passwordChecker: security.NoopPasswordChecker{}}
+}
+func (s *Service) SetReauthenticationTTL(value time.Duration) {
+	if value > 0 && value <= 15*time.Minute {
+		s.reauthTTL = value
+	}
+}
+func (s *Service) SetPasswordChecker(value security.PasswordChecker) {
+	if value != nil {
+		s.passwordChecker = value
+	}
+}
+func (s *Service) acceptablePassword(ctx context.Context, password string) bool {
+	compromised, err := s.passwordChecker.Compromised(ctx, password)
+	return err == nil && !compromised
 }
 
 func normalizeEmail(value string) (string, error) {
@@ -95,9 +121,12 @@ func normalizeEmail(value string) (string, error) {
 	return value, nil
 }
 func (s *Service) Register(ctx context.Context, name, email, password, ip string) error {
+	if !s.allow(ctx, "register", ip, 5, time.Hour) {
+		return ErrRateLimited
+	}
 	name = strings.TrimSpace(name)
 	email, e := normalizeEmail(email)
-	if e != nil || name == "" || len([]rune(name)) > 150 || security.ValidatePassword(password) != nil {
+	if e != nil || name == "" || len([]rune(name)) > 150 || security.ValidatePassword(password) != nil || !s.acceptablePassword(ctx, password) {
 		return ErrInvalid
 	}
 	hash, e := security.HashPassword(password)
@@ -119,6 +148,9 @@ func (s *Service) Register(ctx context.Context, name, email, password, ip string
 	return nil
 }
 func (s *Service) VerifyEmail(ctx context.Context, raw, ip string) error {
+	if !s.allow(ctx, "email_verification", ip, 10, time.Hour) {
+		return ErrRateLimited
+	}
 	if len(raw) < 32 {
 		return ErrInvalid
 	}
@@ -131,6 +163,9 @@ func (s *Service) VerifyEmail(ctx context.Context, raw, ip string) error {
 	return e
 }
 func (s *Service) ResendVerification(ctx context.Context, email, ip string) error {
+	if !s.allow(ctx, "email_verification", ip, 5, time.Hour) {
+		return ErrRateLimited
+	}
 	email, e := normalizeEmail(email)
 	if e != nil {
 		return nil
@@ -152,6 +187,9 @@ func (s *Service) ResendVerification(ctx context.Context, email, ip string) erro
 	return nil
 }
 func (s *Service) RequestReset(ctx context.Context, email, ip string) error {
+	if !s.allow(ctx, "password_reset", ip, 5, time.Hour) {
+		return ErrRateLimited
+	}
 	email, e := normalizeEmail(email)
 	if e != nil {
 		return nil
@@ -173,7 +211,7 @@ func (s *Service) RequestReset(ctx context.Context, email, ip string) error {
 	return nil
 }
 func (s *Service) ResetPassword(ctx context.Context, raw, password, ip string) error {
-	if security.ValidatePassword(password) != nil || len(raw) < 32 {
+	if security.ValidatePassword(password) != nil || len(raw) < 32 || !s.acceptablePassword(ctx, password) {
 		return ErrInvalid
 	}
 	hash, e := security.HashPassword(password)
@@ -190,6 +228,9 @@ func (s *Service) ResetPassword(ctx context.Context, raw, password, ip string) e
 }
 
 func (s *Service) StartLogin(ctx context.Context, kind, email, password, ip, ua string) (LoginResult, error) {
+	if !s.allow(ctx, "login", kind+"|"+ip, 10, time.Minute) {
+		return LoginResult{}, ErrRateLimited
+	}
 	email, e := normalizeEmail(email)
 	if e != nil {
 		return LoginResult{}, ErrUnauthorized
@@ -263,6 +304,9 @@ func (s *Service) passwordSession(ctx context.Context, identity Identity, ip, ua
 	return LoginResult{Action: "authenticated", SessionToken: sessionRaw, CSRFToken: csrfRaw, Session: &session}, nil
 }
 func (s *Service) CompleteMFA(ctx context.Context, raw, code, recovery, ip, ua string) (CompleteResult, error) {
+	if !s.allow(ctx, "mfa", ip, 10, time.Minute) {
+		return CompleteResult{}, ErrRateLimited
+	}
 	challenge, e := s.repo.GetChallenge(ctx, security.TokenHash(raw))
 	if e != nil || challenge.Consumed || challenge.ExpiresAt.Before(s.now()) || challenge.Attempts >= 10 {
 		return CompleteResult{}, ErrUnauthorized
@@ -347,20 +391,39 @@ func (s *Service) Disable(ctx context.Context, kind, id string) error {
 	if kind == "admin" {
 		return ErrInvalid
 	}
-	return s.repo.DisableMFA(ctx, kind, id)
+	err := s.repo.DisableMFA(ctx, kind, id)
+	if err == nil {
+		_ = s.repo.SecurityEvent(ctx, kind, &id, kind+".mfa.disable", "success", "")
+	}
+	return err
 }
 func (s *Service) RevokeSessions(ctx context.Context, kind, id string) error {
-	return s.repo.RevokeSessions(ctx, kind, id)
+	err := s.repo.RevokeSessions(ctx, kind, id)
+	if err == nil {
+		_ = s.repo.SecurityEvent(ctx, kind, &id, kind+".sessions.revoke_all", "success", "")
+	}
+	return err
 }
 func (s *Service) SetPassword(ctx context.Context, kind, id, password string) error {
-	if security.ValidatePassword(password) != nil {
+	if security.ValidatePassword(password) != nil || !s.acceptablePassword(ctx, password) {
 		return ErrInvalid
 	}
 	hash, e := security.HashPassword(password)
 	if e != nil {
 		return e
 	}
-	return s.repo.UpdatePassword(ctx, kind, id, hash)
+	if e = s.repo.UpdatePassword(ctx, kind, id, hash); e != nil {
+		return e
+	}
+	if e = s.repo.RevokeSessions(ctx, kind, id); e != nil {
+		return e
+	}
+	_ = s.repo.SecurityEvent(ctx, kind, &id, kind+".password.change", "success", "")
+	return nil
+}
+func (s *Service) HasPassword(ctx context.Context, kind, id string) bool {
+	identity, err := s.repo.FindIdentityByID(ctx, kind, id)
+	return err == nil && identity.PasswordHash != ""
 }
 func (s *Service) RegenerateRecoveryCodes(ctx context.Context, kind, id string) ([]string, error) {
 	raw, hashes, e := security.RecoveryCodes(10)
@@ -370,5 +433,58 @@ func (s *Service) RegenerateRecoveryCodes(ctx context.Context, kind, id string) 
 	if e = s.repo.RegenerateRecoveryCodes(ctx, kind, id, hashes); e != nil {
 		return nil, e
 	}
+	_ = s.repo.SecurityEvent(ctx, kind, &id, kind+".recovery_codes.regenerate", "success", "")
 	return raw, nil
+}
+
+func (s *Service) Reauthenticate(ctx context.Context, kind, id, sessionID, password, code, recovery, ip string) (string, error) {
+	identity, err := s.repo.FindIdentityByID(ctx, kind, id)
+	if err != nil {
+		return "", ErrUnauthorized
+	}
+	ok, _ := security.VerifyPassword(identity.PasswordHash, password)
+	if !ok {
+		_ = s.repo.SecurityEvent(ctx, kind, &id, kind+".reauth", "denied", ip)
+		return "", ErrUnauthorized
+	}
+	factor, factorErr := s.repo.GetFactor(ctx, kind, id)
+	var counter *int64
+	recoveryHash := ""
+	if factorErr == nil && factor.Enabled {
+		secret, decryptErr := s.cipher.Decrypt(factor.Ciphertext, factor.KeyVersion)
+		if decryptErr != nil {
+			return "", ErrUnauthorized
+		}
+		if recovery != "" {
+			recoveryHash = security.TokenHash(strings.ToUpper(strings.TrimSpace(recovery)))
+		} else {
+			value, valid := security.ValidateTOTP(string(secret), code, s.now(), factor.LastCounter)
+			if !valid {
+				return "", ErrUnauthorized
+			}
+			counter = &value
+		}
+	} else if kind == "admin" {
+		return "", ErrUnauthorized
+	}
+	raw, hash, err := security.Token()
+	if err != nil {
+		return "", err
+	}
+	if err = s.repo.CreateReauthEvidence(ctx, kind, id, sessionID, counter, recoveryHash, hash, s.now().Add(s.reauthTTL)); err != nil {
+		return "", ErrUnauthorized
+	}
+	_ = s.repo.SecurityEvent(ctx, kind, &id, kind+".reauth", "success", ip)
+	return raw, nil
+}
+
+func (s *Service) ConsumeReauthentication(ctx context.Context, kind, sessionID, raw, ip string) error {
+	if len(raw) < 32 {
+		return ErrUnauthorized
+	}
+	err := s.repo.ConsumeReauthEvidence(ctx, kind, sessionID, security.TokenHash(raw))
+	if err != nil {
+		return ErrUnauthorized
+	}
+	return nil
 }

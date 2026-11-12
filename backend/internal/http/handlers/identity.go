@@ -43,6 +43,34 @@ func identityError(w http.ResponseWriter, err error) {
 func decodeIdentity(w http.ResponseWriter, r *http.Request, value any) bool {
 	return json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(value) == nil
 }
+
+type reauthRequest struct {
+	Password     string `json:"password"`
+	Code         string `json:"code"`
+	RecoveryCode string `json:"recovery_code"`
+}
+
+func (h *AdminHandler) Reauthenticate(w http.ResponseWriter, r *http.Request) {
+	s, err := h.mutationSession(r)
+	if err != nil {
+		adminError(w, err)
+		return
+	}
+	var body reauthRequest
+	if !decodeIdentity(w, r, &body) {
+		identityError(w, identityapp.ErrInvalid)
+		return
+	}
+	token, err := h.identity.Reauthenticate(r.Context(), "admin", s.UserID, s.ID, body.Password, body.Code, body.RecoveryCode, adminIP(r))
+	if err != nil {
+		identityError(w, err)
+		return
+	}
+	writeQuoteJSON(w, 200, map[string]any{"data": map[string]string{"reauthentication_token": token}})
+}
+func (h *AdminHandler) consumeReauth(r *http.Request, sessionID string) error {
+	return h.identity.ConsumeReauthentication(r.Context(), "admin", sessionID, r.Header.Get("X-Reauthentication-Token"), adminIP(r))
+}
 func (h *AdminHandler) identityLogin(w http.ResponseWriter, r *http.Request) {
 	if h.identity == nil {
 		identityError(w, identityapp.ErrUnavailable)
@@ -109,12 +137,42 @@ func (h *AdminHandler) RegenerateRecoveryCodes(w http.ResponseWriter, r *http.Re
 		adminError(w, e)
 		return
 	}
+	if e = h.consumeReauth(r, s.ID); e != nil {
+		identityError(w, e)
+		return
+	}
 	codes, e := h.identity.RegenerateRecoveryCodes(r.Context(), "admin", s.UserID)
 	if e != nil {
 		identityError(w, e)
 		return
 	}
 	writeQuoteJSON(w, 200, map[string]any{"data": map[string]any{"recovery_codes": codes}})
+}
+
+func (h *CustomerHandler) Reauthenticate(w http.ResponseWriter, r *http.Request) {
+	s, err := h.session(r)
+	if err != nil {
+		customerError(w, err)
+		return
+	}
+	if !customerapp.CSRF(r.Header.Get("X-CSRF-Token"), s.CSRFHash) {
+		customerError(w, customerapp.ErrForbidden)
+		return
+	}
+	var body reauthRequest
+	if !decodeIdentity(w, r, &body) {
+		identityError(w, identityapp.ErrInvalid)
+		return
+	}
+	token, err := h.identity.Reauthenticate(r.Context(), "customer", s.UserID, s.ID, body.Password, body.Code, body.RecoveryCode, adminIP(r))
+	if err != nil {
+		identityError(w, err)
+		return
+	}
+	writeQuoteJSON(w, 200, map[string]any{"data": map[string]string{"reauthentication_token": token}})
+}
+func (h *CustomerHandler) consumeReauth(r *http.Request, sessionID string) error {
+	return h.identity.ConsumeReauthentication(r.Context(), "customer", sessionID, r.Header.Get("X-Reauthentication-Token"), adminIP(r))
 }
 
 func (h *CustomerHandler) Register(w http.ResponseWriter, r *http.Request) {
@@ -271,6 +329,10 @@ func (h *CustomerHandler) DisableMFA(w http.ResponseWriter, r *http.Request) {
 		customerError(w, customerapp.ErrForbidden)
 		return
 	}
+	if e = h.consumeReauth(r, s.ID); e != nil {
+		identityError(w, e)
+		return
+	}
 	if e = h.identity.Disable(r.Context(), "customer", s.UserID); e != nil {
 		identityError(w, e)
 		return
@@ -287,6 +349,14 @@ func (h *CustomerHandler) SetPassword(w http.ResponseWriter, r *http.Request) {
 	if !customerapp.CSRF(r.Header.Get("X-CSRF-Token"), s.CSRFHash) {
 		customerError(w, customerapp.ErrForbidden)
 		return
+	}
+	// A verified magic-link session may enroll its first password. Replacing an
+	// existing credential always requires a fresh, one-time reauthentication.
+	if h.identity.HasPassword(r.Context(), "customer", s.UserID) {
+		if e = h.consumeReauth(r, s.ID); e != nil {
+			identityError(w, e)
+			return
+		}
 	}
 	var b struct{ Password string }
 	if !decodeIdentity(w, r, &b) {
@@ -309,6 +379,10 @@ func (h *CustomerHandler) RegenerateRecoveryCodes(w http.ResponseWriter, r *http
 		customerError(w, customerapp.ErrForbidden)
 		return
 	}
+	if e = h.consumeReauth(r, s.ID); e != nil {
+		identityError(w, e)
+		return
+	}
 	codes, e := h.identity.RegenerateRecoveryCodes(r.Context(), "customer", s.UserID)
 	if e != nil {
 		identityError(w, e)
@@ -324,6 +398,10 @@ func (h *CustomerHandler) RevokeAllSessions(w http.ResponseWriter, r *http.Reque
 	}
 	if !customerapp.CSRF(r.Header.Get("X-CSRF-Token"), s.CSRFHash) {
 		customerError(w, customerapp.ErrForbidden)
+		return
+	}
+	if e = h.consumeReauth(r, s.ID); e != nil {
+		identityError(w, e)
 		return
 	}
 	if e = h.identity.RevokeSessions(r.Context(), "customer", s.UserID); e != nil {

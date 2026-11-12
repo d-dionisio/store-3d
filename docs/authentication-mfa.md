@@ -46,3 +46,5 @@ O adaptador de desenvolvimento não deve entregar links reais nem registrar toke
 - runbook e automação de rotação da chave de cifragem;
 - reautenticação recente dedicada antes de desativar MFA ou regenerar códigos.
 
+O hardening posterior implementa evidência de reautenticação de uso único, keyring e recifragem. Consulte `docs/authentication-hardening.md`; esta referência prevalece para a operação atual.
+

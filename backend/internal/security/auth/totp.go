@@ -20,7 +20,7 @@ import (
 )
 
 type Cipher struct {
-	key     []byte
+	keys    map[int16][]byte
 	Version int16
 }
 
@@ -29,10 +29,24 @@ func NewCipher(encoded string, version int16) (*Cipher, error) {
 	if err != nil || len(key) != 32 || version < 1 {
 		return nil, errors.New("AUTH_MFA_ENCRYPTION_KEY must be base64 for exactly 32 bytes")
 	}
-	return &Cipher{key: key, Version: version}, nil
+	return &Cipher{keys: map[int16][]byte{version: key}, Version: version}, nil
+}
+func NewKeyring(active int16, encoded map[int16]string) (*Cipher, error) {
+	keys := make(map[int16][]byte, len(encoded))
+	for version, value := range encoded {
+		key, err := base64.StdEncoding.DecodeString(value)
+		if err != nil || len(key) != 32 || version < 1 {
+			return nil, errors.New("every MFA key must be base64 for exactly 32 bytes")
+		}
+		keys[version] = key
+	}
+	if _, ok := keys[active]; !ok {
+		return nil, errors.New("active MFA key version is unavailable")
+	}
+	return &Cipher{keys: keys, Version: active}, nil
 }
 func (c *Cipher) Encrypt(plain []byte) ([]byte, error) {
-	block, err := aes.NewCipher(c.key)
+	block, err := aes.NewCipher(c.keys[c.Version])
 	if err != nil {
 		return nil, err
 	}
@@ -47,10 +61,11 @@ func (c *Cipher) Encrypt(plain []byte) ([]byte, error) {
 	return gcm.Seal(nonce, nonce, plain, []byte("loja3d:mfa:v"+strconv.Itoa(int(c.Version)))), nil
 }
 func (c *Cipher) Decrypt(value []byte, version int16) ([]byte, error) {
-	if version != c.Version {
+	key, ok := c.keys[version]
+	if !ok {
 		return nil, errors.New("unsupported MFA key version")
 	}
-	block, err := aes.NewCipher(c.key)
+	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}

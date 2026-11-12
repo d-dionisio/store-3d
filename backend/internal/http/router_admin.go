@@ -61,6 +61,7 @@ func newHandler(frontendOrigin string, readiness handlers.ReadinessChecker, cata
 	if admin != nil {
 		router.HandleFunc("POST /api/v1/admin/session", admin.Login)
 		router.HandleFunc("POST /api/v1/admin/session/mfa", admin.CompleteIdentityMFA)
+		router.HandleFunc("POST /api/v1/admin/session/reauthenticate", admin.Reauthenticate)
 		router.HandleFunc("GET /api/v1/admin/security", admin.SecurityStatus)
 		router.HandleFunc("POST /api/v1/admin/security/recovery-codes", admin.RegenerateRecoveryCodes)
 		router.HandleFunc("DELETE /api/v1/admin/session", admin.Logout)
@@ -81,6 +82,7 @@ func newHandler(frontendOrigin string, readiness handlers.ReadinessChecker, cata
 		router.HandleFunc("POST /api/v1/customer/register", customer.Register)
 		router.HandleFunc("POST /api/v1/customer/session", customer.PasswordLogin)
 		router.HandleFunc("POST /api/v1/customer/session/mfa", customer.CompleteIdentityMFA)
+		router.HandleFunc("POST /api/v1/customer/session/reauthenticate", customer.Reauthenticate)
 		router.HandleFunc("POST /api/v1/customer/email/verify", customer.VerifyEmail)
 		router.HandleFunc("POST /api/v1/customer/email/resend", customer.ResendVerification)
 		router.HandleFunc("POST /api/v1/customer/password/forgot", customer.RequestPasswordReset)

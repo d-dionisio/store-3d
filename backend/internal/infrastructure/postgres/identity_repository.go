@@ -44,6 +44,17 @@ func (r *IdentityRepository) FindIdentity(ctx context.Context, kind, email strin
 	}
 	return v, noRows(err)
 }
+
+func (r *IdentityRepository) FindIdentityByID(ctx context.Context, kind, id string) (app.Identity, error) {
+	var v app.Identity
+	v.Kind = kind
+	if kind == "admin" {
+		e := r.pool.QueryRow(ctx, `SELECT id,email,full_name,role,status,password_hash,locked_until,true FROM admin_users WHERE id=$1`, id).Scan(&v.ID, &v.Email, &v.FullName, &v.Role, &v.Status, &v.PasswordHash, &v.LockedUntil, &v.EmailVerified)
+		return v, noRows(e)
+	}
+	e := r.pool.QueryRow(ctx, `SELECT id,email,full_name,'customer',status,coalesce(password_hash,''),locked_until,email_verified_at IS NOT NULL FROM users WHERE id=$1`, id).Scan(&v.ID, &v.Email, &v.FullName, &v.Role, &v.Status, &v.PasswordHash, &v.LockedUntil, &v.EmailVerified)
+	return v, noRows(e)
+}
 func (r *IdentityRepository) RegisterCustomer(ctx context.Context, name, email, passwordHash, tokenHash string, expires time.Time) (app.Identity, error) {
 	tx, e := r.pool.Begin(ctx)
 	if e != nil {
@@ -377,4 +388,68 @@ func (r *IdentityRepository) SecurityEvent(ctx context.Context, kind string, id 
 	}
 	_, e := r.pool.Exec(ctx, `INSERT INTO security_events(actor_type,admin_user_id,user_id,event_type,outcome,ip_address) VALUES($1,$2,$3,$4,$5,nullif($6,'')::inet)`, kind, adminID, userID, event, outcome, ip)
 	return e
+}
+
+func (r *IdentityRepository) CreateReauthEvidence(ctx context.Context, kind, id, sessionID string, counter *int64, recoveryHash, tokenHash string, expires time.Time) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if counter != nil || recoveryHash != "" {
+		var factorID string
+		column := "user_id"
+		if kind == "admin" {
+			column = "admin_user_id"
+		}
+		if err = tx.QueryRow(ctx, `SELECT id FROM auth_mfa_factors WHERE `+column+`=$1 AND enabled_at IS NOT NULL FOR UPDATE`, id).Scan(&factorID); err != nil {
+			return noRows(err)
+		}
+		if counter != nil {
+			tag, updateErr := tx.Exec(ctx, `UPDATE auth_mfa_factors SET last_accepted_counter=$2,updated_at=now() WHERE id=$1 AND (last_accepted_counter IS NULL OR last_accepted_counter<$2)`, factorID, *counter)
+			if updateErr != nil || tag.RowsAffected() != 1 {
+				return app.ErrUnauthorized
+			}
+		} else {
+			tag, updateErr := tx.Exec(ctx, `UPDATE auth_recovery_codes SET used_at=now() WHERE factor_id=$1 AND code_hash=$2 AND used_at IS NULL`, factorID, recoveryHash)
+			if updateErr != nil || tag.RowsAffected() != 1 {
+				return app.ErrUnauthorized
+			}
+		}
+	}
+	adminSession, customerSession := any(nil), any(nil)
+	if kind == "admin" {
+		adminSession = sessionID
+	} else {
+		customerSession = sessionID
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO auth_reauthentication_evidence(admin_session_id,customer_session_id,token_hash,expires_at) VALUES($1,$2,$3,$4)`, adminSession, customerSession, tokenHash, expires)
+	if err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (r *IdentityRepository) ConsumeReauthEvidence(ctx context.Context, kind, sessionID, tokenHash string) error {
+	column := "customer_session_id"
+	if kind == "admin" {
+		column = "admin_session_id"
+	}
+	tag, err := r.pool.Exec(ctx, `UPDATE auth_reauthentication_evidence SET consumed_at=now() WHERE token_hash=$1 AND `+column+`=$2 AND consumed_at IS NULL AND expires_at>now()`, tokenHash, sessionID)
+	if err != nil || tag.RowsAffected() != 1 {
+		return app.ErrUnauthorized
+	}
+	return nil
+}
+
+func (r *IdentityRepository) AllowRateLimit(ctx context.Context, scope, subjectHash string, limit int, window time.Duration) (bool, error) {
+	var attempts int
+	err := r.pool.QueryRow(ctx, `INSERT INTO auth_rate_limits(scope,subject_hash,window_started_at,attempts,expires_at)
+		VALUES($1,$2,now(),1,now()+make_interval(secs => $3))
+		ON CONFLICT(scope,subject_hash) DO UPDATE SET
+		window_started_at=CASE WHEN auth_rate_limits.expires_at<=now() THEN now() ELSE auth_rate_limits.window_started_at END,
+		attempts=CASE WHEN auth_rate_limits.expires_at<=now() THEN 1 ELSE auth_rate_limits.attempts+1 END,
+		expires_at=CASE WHEN auth_rate_limits.expires_at<=now() THEN now()+make_interval(secs => $3) ELSE auth_rate_limits.expires_at END
+		RETURNING attempts`, scope, subjectHash, int64(window.Seconds())).Scan(&attempts)
+	return attempts <= limit, err
 }

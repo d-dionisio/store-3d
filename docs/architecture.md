@@ -481,3 +481,11 @@ Ainda não foram implementados:
 - Tokens de verificação, redefinição e desafios são aleatórios, armazenados como hash, expiram e têm uso único. Redefinir senha ou desabilitar MFA revoga sessões.
 - A migration 23 revoga sessões administrativas anteriores à exigência de MFA e adiciona eventos de segurança. Detalhes operacionais e pendências estão em `docs/authentication-mfa.md`.
 
+## Etapa 7.5.2 — hardening de autenticação
+
+- A migration 24 adiciona evidências de reautenticação vinculadas à sessão e contadores distribuídos PostgreSQL. Evidências são curtas, hash-only e consumidas uma única vez.
+- O keyring MFA lê versões antigas autorizadas e cifra somente com a versão ativa. `cmd/mfa-key` audita dependências e recifra todos os fatores em uma transação.
+- A checagem opcional de senhas comprometidas usa prefixo SHA-1 k-anônimo e política explícita de indisponibilidade. Senhas completas nunca saem da API.
+- Rate limiting compartilhado usa UPSERT atômico; o limitador em memória permanece como defesa local. Nenhum header de encaminhamento não autenticado determina o sujeito.
+- Runbooks, rollback e pendências estão em `docs/authentication-hardening.md` e `docs/access-operations.md`.
+

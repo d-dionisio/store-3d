@@ -45,3 +45,20 @@ Para liberar acesso real deve ser implementado um adaptador de provedor com:
 - métricas sem destinatário ou token e tratamento de bounce/complaint.
 
 Até esse adaptador existir, magic link não deve ser considerado operacional em produção.
+# Recuperação assistida de identidade
+
+Não existe rota pública, senha mestra ou token universal de recuperação.
+
+## Cliente sem todos os fatores
+
+1. O atendimento abre incidente sem solicitar senha, TOTP ou código completo.
+2. Confirmar identidade com evidências independentes já existentes, evitando usar somente o e-mail. Dados de pedidos não devem ser revelados para ajudar a resposta.
+3. Um administrador autorizado revisa a evidência e registra a decisão na auditoria.
+4. Aplicar período de segurança e notificar os canais previamente verificados.
+5. Em implementação futura, emitir uma autorização curta e específica para reset, revogar todas as sessões e exigir nova senha/MFA. A Etapa 7.5.2 não executa recuperações reais.
+
+## Administrador sem todos os fatores
+
+Exigir dois responsáveis, evidência independente e acesso administrativo ainda autenticado. Revogar sessões e códigos anteriores, registrar incidente e notificar os demais administradores. E-mail isolado nunca é suficiente.
+
+Para o último administrador, a recuperação é offline e excepcional: acesso privilegiado ao host e PostgreSQL, backup confirmado, janela de manutenção, aprovação de dois responsáveis e registro imutável do incidente. Um comando operacional futuro pode remover exclusivamente o fator do ID aprovado e revogar suas sessões; não se deve editar hashes ou criar um bypass permanente. Depois, o login normal força nova configuração TOTP.

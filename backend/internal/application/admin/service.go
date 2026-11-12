@@ -117,6 +117,9 @@ func (s *Service) Logout(ctx context.Context, session domain.Session, ip string)
 	_ = s.repo.Audit(ctx, &session.UserID, &session.ID, "admin.logout", "session", session.ID, outcome, ip)
 	return err
 }
+func (s *Service) Audit(ctx context.Context, session domain.Session, action, resourceType, resourceID, result, ip string) error {
+	return s.repo.Audit(ctx, &session.UserID, &session.ID, action, resourceType, resourceID, result, ip)
+}
 func (s *Service) Stats(ctx context.Context, session domain.Session, ip string) (domain.Stats, error) {
 	v, e := s.repo.Stats(ctx)
 	_ = s.repo.Audit(ctx, &session.UserID, &session.ID, "quotes.stats", "quote", "", outcome(e), ip)

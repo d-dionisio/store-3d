@@ -13,6 +13,7 @@ import (
 	adminapp "example.com/loja-3d/backend/internal/application/admin"
 	catalogapp "example.com/loja-3d/backend/internal/application/catalog"
 	customerapp "example.com/loja-3d/backend/internal/application/customer"
+	editorialapp "example.com/loja-3d/backend/internal/application/editorial"
 	paymentapp "example.com/loja-3d/backend/internal/application/payment"
 	quoteapp "example.com/loja-3d/backend/internal/application/quote"
 	shippingapp "example.com/loja-3d/backend/internal/application/shipping"
@@ -60,7 +61,10 @@ func main() {
 	}
 	quoteHandler := handlers.NewQuoteHandler(quoteapp.New(quoteRepository, quoteStorage, bucket))
 	adminRepository := postgres.NewAdminRepository(pool)
-	adminHandler := handlers.NewAdminHandler(adminapp.New(adminRepository), envOrDefault("APP_ENV", "development") == "production")
+	adminService := adminapp.New(adminRepository)
+	adminHandler := handlers.NewAdminHandler(adminService, envOrDefault("APP_ENV", "development") == "production")
+	editorialService := editorialapp.New(postgres.NewEditorialRepository(pool), catalogRepository)
+	editorialHandler := handlers.NewEditorialHandler(editorialService, adminService)
 	appEnv := envOrDefault("APP_ENV", "development")
 	var customerMailer customerapp.Mailer = mail.Unavailable{}
 	if appEnv == "development" && envOrDefault("EMAIL_PROVIDER", "disabled") == "development" {
@@ -117,7 +121,7 @@ func main() {
 
 	server := &http.Server{
 		Addr:              ":" + port,
-		Handler:           apihttp.NewHandlerComplete(frontendOrigin, databaseHealth, catalogHandler, quoteHandler, adminHandler, customerHandler, shippingHandler, paymentHandler),
+		Handler:           apihttp.NewHandlerComplete(frontendOrigin, databaseHealth, catalogHandler, quoteHandler, adminHandler, customerHandler, shippingHandler, paymentHandler, editorialHandler),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,

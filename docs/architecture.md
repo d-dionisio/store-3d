@@ -409,3 +409,13 @@ Ainda não foram implementados:
 - A virada usa CSS 3D e APIs nativas, sem dependência de flipbook. Em telas menores que 900 px o documento vira uma leitura vertical integral; `prefers-reduced-motion` elimina a animação sem ocultar conteúdo.
 - URLs de compartilhamento usam a localização atual no navegador. `SITE_URL` define a base canônica dos metadados no servidor e deve apontar para o domínio público em produção.
 
+## Etapa 9.3.2 — gestão editorial de catálogos
+
+- `editorial_catalogs` armazena somente título, slug, descrição, chamadas editoriais, status, capa referenciada e controle de versão. `editorial_catalog_products` guarda apenas `product_id` e posição; preço, nome, estoque, imagens e disponibilidade continuam no catálogo comercial.
+- A capa seleciona um registro existente de `product_images`. Upload editorial novo permanece fora do escopo até existir um fluxo de imagens de produto administrável.
+- Publicação exige catálogo não vazio e revalida todos os produtos pelas mesmas regras públicas: produto, categoria, variante, material e cor ativos, além de estoque disponível quando controlado.
+- `version` implementa concorrência otimista. Metadados, reordenação e publicação com versão obsoleta retornam conflito, impedindo sobrescrita silenciosa.
+- Rascunhos existem apenas sob `/api/v1/admin/catalogs`; a API pública filtra `status=published` e remove produtos que deixaram de ser comercializáveis.
+- Todas as mutações exigem sessão administrativa com role `admin` e token CSRF. Criação, edição, produtos, publicação e despublicação geram eventos em `admin_audit_events`.
+- A interface administrativa usa substituição ordenada transacional para salvar a composição completa; endpoints explícitos de adicionar e remover também são oferecidos para outros clientes.
+

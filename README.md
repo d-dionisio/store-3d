@@ -331,3 +331,23 @@ Aplique a migration 17 com `cd backend` e `go run ./cmd/migrate up`. Use Public 
 
 Para uma validação externa autorizada, mantenha a API em `127.0.0.1:8080` e execute `go run ./cmd/webhook-proxy` no diretório `backend`. O proxy escuta em `:8090` e só encaminha `POST /api/v1/webhooks/mercado-pago`; todas as demais rotas ficam bloqueadas. Aponte o túnel HTTPS exclusivamente para a porta 8090. O procedimento e os testes de bloqueio estão em `docs/mercado-pago-webhook-proxy.md`. O projeto nunca abre o túnel automaticamente.
 
+## Catálogos editoriais administráveis
+
+Aplique a migration 18 com `cd backend` e `go run ./cmd/migrate up`. Administradores com role `admin` gerenciam as edições em `/admin/catalogos`; todas as mutações exigem o cookie de sessão e `X-CSRF-Token`.
+
+API pública:
+
+- `GET /api/v1/editorial-catalogs`
+- `GET /api/v1/editorial-catalogs/{slug}`
+
+API administrativa:
+
+- `GET|POST /api/v1/admin/catalogs`
+- `GET|PUT /api/v1/admin/catalogs/{id}`
+- `POST|PUT /api/v1/admin/catalogs/{id}/products`
+- `DELETE /api/v1/admin/catalogs/{id}/products/{productID}?expected_version={version}`
+- `POST /api/v1/admin/catalogs/{id}/publish`
+- `POST /api/v1/admin/catalogs/{id}/unpublish`
+
+Somente catálogos publicados e com produtos atualmente comercializáveis aparecem em `/catalogo`. Preço, estoque e dados do produto nunca são copiados para as tabelas editoriais.
+

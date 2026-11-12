@@ -189,6 +189,57 @@ func (repository *CatalogRepository) GetProductBySlug(ctx context.Context, slug 
 	return products[0], nil
 }
 
+func (repository *CatalogRepository) GetProductsByIDs(ctx context.Context, productIDs []string) ([]domain.Product, error) {
+	if len(productIDs) == 0 {
+		return []domain.Product{}, nil
+	}
+	const query = `
+        SELECT p.id, p.slug, p.name, coalesce(p.short_description, ''), p.description,
+               p.is_featured, p.production_type,
+               c.id, c.slug, c.name, coalesce(c.description, '')
+        FROM products p
+        JOIN categories c ON c.id = p.category_id
+        WHERE p.id = ANY($1::uuid[]) AND p.status='active' AND p.deleted_at IS NULL
+          AND c.is_active AND c.deleted_at IS NULL
+          AND EXISTS (
+            SELECT 1 FROM product_variants pv
+            JOIN materials m ON m.id=pv.material_id AND m.is_active
+            JOIN colors color ON color.id=pv.color_id AND color.is_active
+            LEFT JOIN product_sizes s ON s.id=pv.size_id AND s.is_active
+            LEFT JOIN finishes f ON f.id=pv.finish_id AND f.is_active
+            WHERE pv.product_id=p.id AND pv.status='active' AND pv.deleted_at IS NULL
+              AND (NOT pv.track_inventory OR pv.stock_quantity-pv.reserved_quantity>0)
+              AND (pv.size_id IS NULL OR s.id IS NOT NULL)
+              AND (pv.finish_id IS NULL OR f.id IS NOT NULL)
+          )`
+	rows, err := repository.pool.Query(ctx, query, productIDs)
+	if err != nil {
+		return nil, fmt.Errorf("get products by ids: %w", err)
+	}
+	defer rows.Close()
+	byID := make(map[string]domain.Product, len(productIDs))
+	for rows.Next() {
+		var product domain.Product
+		if err = rows.Scan(&product.ID, &product.Slug, &product.Name, &product.ShortDescription, &product.Description, &product.IsFeatured, &product.ProductionType, &product.Category.ID, &product.Category.Slug, &product.Category.Name, &product.Category.Description); err != nil {
+			return nil, err
+		}
+		byID[product.ID] = product
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	products := make([]domain.Product, 0, len(byID))
+	for _, id := range productIDs {
+		if product, ok := byID[id]; ok {
+			products = append(products, product)
+		}
+	}
+	if err = repository.hydrateProducts(ctx, products); err != nil {
+		return nil, err
+	}
+	return products, nil
+}
+
 func (repository *CatalogRepository) ListCategories(ctx context.Context) ([]domain.Category, error) {
 	const query = `
         SELECT c.id, c.slug, c.name, coalesce(c.description, '')

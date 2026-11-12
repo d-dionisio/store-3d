@@ -22,10 +22,10 @@ func NewHandlerFull(frontendOrigin string, readiness handlers.ReadinessChecker, 
 func NewHandlerWithShipping(frontendOrigin string, readiness handlers.ReadinessChecker, catalog *handlers.CatalogHandler, quotes *handlers.QuoteHandler, admin *handlers.AdminHandler, customer *handlers.CustomerHandler, shipping *handlers.ShippingHandler) http.Handler {
 	return newHandler(frontendOrigin, readiness, catalog, quotes, admin, customer, shipping, nil)
 }
-func NewHandlerComplete(frontendOrigin string, readiness handlers.ReadinessChecker, catalog *handlers.CatalogHandler, quotes *handlers.QuoteHandler, admin *handlers.AdminHandler, customer *handlers.CustomerHandler, shipping *handlers.ShippingHandler, payment *handlers.PaymentHandler) http.Handler {
-	return newHandler(frontendOrigin, readiness, catalog, quotes, admin, customer, shipping, payment)
+func NewHandlerComplete(frontendOrigin string, readiness handlers.ReadinessChecker, catalog *handlers.CatalogHandler, quotes *handlers.QuoteHandler, admin *handlers.AdminHandler, customer *handlers.CustomerHandler, shipping *handlers.ShippingHandler, payment *handlers.PaymentHandler, editorial ...*handlers.EditorialHandler) http.Handler {
+	return newHandler(frontendOrigin, readiness, catalog, quotes, admin, customer, shipping, payment, editorial...)
 }
-func newHandler(frontendOrigin string, readiness handlers.ReadinessChecker, catalog *handlers.CatalogHandler, quotes *handlers.QuoteHandler, admin *handlers.AdminHandler, customer *handlers.CustomerHandler, shipping *handlers.ShippingHandler, payment *handlers.PaymentHandler) http.Handler {
+func newHandler(frontendOrigin string, readiness handlers.ReadinessChecker, catalog *handlers.CatalogHandler, quotes *handlers.QuoteHandler, admin *handlers.AdminHandler, customer *handlers.CustomerHandler, shipping *handlers.ShippingHandler, payment *handlers.PaymentHandler, editorial ...*handlers.EditorialHandler) http.Handler {
 	router := http.NewServeMux()
 	router.HandleFunc("GET /api/v1/health", handlers.Health)
 	router.HandleFunc("GET /api/v1/ready", handlers.Ready(readiness))
@@ -33,6 +33,20 @@ func newHandler(frontendOrigin string, readiness handlers.ReadinessChecker, cata
 		router.HandleFunc("GET /api/v1/products", catalog.ListProducts)
 		router.HandleFunc("GET /api/v1/products/{slug}", catalog.GetProduct)
 		router.HandleFunc("GET /api/v1/categories", catalog.ListCategories)
+	}
+	if len(editorial) > 0 && editorial[0] != nil {
+		h := editorial[0]
+		router.HandleFunc("GET /api/v1/editorial-catalogs", h.PublicList)
+		router.HandleFunc("GET /api/v1/editorial-catalogs/{slug}", h.PublicGet)
+		router.HandleFunc("GET /api/v1/admin/catalogs", h.AdminList)
+		router.HandleFunc("POST /api/v1/admin/catalogs", h.Create)
+		router.HandleFunc("GET /api/v1/admin/catalogs/{id}", h.AdminGet)
+		router.HandleFunc("PUT /api/v1/admin/catalogs/{id}", h.Update)
+		router.HandleFunc("PUT /api/v1/admin/catalogs/{id}/products", h.ReplaceProducts)
+		router.HandleFunc("POST /api/v1/admin/catalogs/{id}/products", h.AddProduct)
+		router.HandleFunc("DELETE /api/v1/admin/catalogs/{id}/products/{productID}", h.RemoveProduct)
+		router.HandleFunc("POST /api/v1/admin/catalogs/{id}/publish", h.Publish)
+		router.HandleFunc("POST /api/v1/admin/catalogs/{id}/unpublish", h.Unpublish)
 	}
 	if quotes != nil {
 		router.HandleFunc("GET /api/v1/quote-options", quotes.Options)

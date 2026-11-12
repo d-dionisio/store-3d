@@ -7,7 +7,7 @@ type AttributeDTO = { id: string; code: string; name: string };
 type ColorDTO = { id: string; slug: string; name: string; hex_code: string };
 type ImageDTO = { id: string; variant_id: string | null; url: string; alt_text: string; media_type: string; sort_order: number; is_primary: boolean };
 type VariantDTO = { id: string; sku: string; name: string | null; price_cents: number; available_quantity: number; track_inventory: boolean; weight_grams: number | null; dimensions: { width_mm: number | null; height_mm: number | null; depth_mm: number | null }; production_lead_time: { min_days: number; max_days: number }; material: AttributeDTO; color: ColorDTO; size?: AttributeDTO | null; finish?: AttributeDTO | null };
-type ProductDTO = { id: string; slug: string; name: string; short_description: string; description: string; is_featured: boolean; production_type: string; min_price_cents: number; category: CategoryDTO; images: ImageDTO[]; materials: AttributeDTO[]; colors: ColorDTO[]; variants: VariantDTO[] };
+export type ProductDTO = { id: string; slug: string; name: string; short_description: string; description: string; is_featured: boolean; production_type: string; min_price_cents: number; category: CategoryDTO; images: ImageDTO[]; materials: AttributeDTO[]; colors: ColorDTO[]; variants: VariantDTO[] };
 type ListDTO = { data: ProductDTO[]; meta: { page: number; limit: number; total: number; total_pages: number } };
 const material = (v: AttributeDTO): Material => v;
 const attribute = (v?: AttributeDTO | null): VariantAttribute | null => v ?? null;

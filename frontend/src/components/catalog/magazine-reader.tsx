@@ -5,7 +5,9 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { CatalogImage } from "@/components/catalog/catalog-image";
 import { formatCurrency } from "@/lib/format";
-import type { Category, Product } from "@/types/product";
+import type { Product } from "@/types/product";
+
+type Collection = { slug: string; name: string; description: string; eyebrow?: string; editionLabel?: string; coverImageUrl?: string };
 
 type MagazinePage = { kind: "cover" } | { kind: "product"; product: Product; number: number } | { kind: "closing" };
 
@@ -24,7 +26,7 @@ function ProductSpread({ product, number }: { product: Product; number: number }
   </div>;
 }
 
-function PageContent({ page, category, products }: { page: MagazinePage; category: Category; products: Product[] }) {
+function PageContent({ page, category, products }: { page: MagazinePage; category: Collection; products: Product[] }) {
   if (page.kind === "product") return <ProductSpread product={page.product} number={page.number} />;
   if (page.kind === "closing") return <div className="catalog-closing">
     <span className="eyebrow">Fim da edição</span><h2>Feito para permanecer.</h2>
@@ -33,14 +35,14 @@ function PageContent({ page, category, products }: { page: MagazinePage; categor
   </div>;
   const coverImage = products[0]?.images.find((item) => item.isPrimary) ?? products[0]?.images[0];
   return <div className="catalog-cover-page">
-    <CatalogImage src={coverImage?.url} alt={`Capa da coleção ${category.name}`} priority sizes="(max-width: 899px) 100vw, 80vw" />
+    <CatalogImage src={category.coverImageUrl || coverImage?.url} alt={`Capa da coleção ${category.name}`} priority sizes="(max-width: 899px) 100vw, 80vw" />
     <div className="catalog-cover-shade" />
-    <div className="catalog-cover-wordmark">LUMÉ <small>CATÁLOGO / 2026</small></div>
-    <div className="catalog-cover-title"><span>Collection no. {String(products.length).padStart(2, "0")}</span><h1>{category.name}</h1><p>{category.description}</p></div>
+    <div className="catalog-cover-wordmark">LUMÉ <small>{category.editionLabel || "CATÁLOGO / 2026"}</small></div>
+    <div className="catalog-cover-title"><span>{category.eyebrow || `Collection no. ${String(products.length).padStart(2, "0")}`}</span><h1>{category.name}</h1><p>{category.description}</p></div>
   </div>;
 }
 
-export function MagazineReader({ category, products }: { category: Category; products: Product[] }) {
+export function MagazineReader({ category, products }: { category: Collection; products: Product[] }) {
   const pages: MagazinePage[] = [{ kind: "cover" }, ...products.map((product, index) => ({ kind: "product" as const, product, number: index + 1 })), { kind: "closing" }];
   const [current, setCurrent] = useState(0);
   const [direction, setDirection] = useState<"next" | "previous">("next");

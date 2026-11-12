@@ -19,6 +19,9 @@ EMAIL_REPLY_TO=support@example.com
 EMAIL_PUBLIC_BASE_URL=https://example.com
 EMAIL_OUTBOX_ENCRYPTION_KEY=<32 bytes aleatórios em Base64>
 EMAIL_OUTBOX_KEY_VERSION=1
+EMAIL_OUTBOX_DECRYPTION_KEYS=
+EMAIL_MESSAGE_RETENTION=720h
+EMAIL_EVENT_RETENTION=2160h
 RESEND_WEBHOOK_SECRET=
 ```
 
@@ -30,7 +33,9 @@ Há HTML responsivo e texto simples para verificação, redefinição, magic lin
 
 ## Confidencialidade e retenção
 
-Destinatário, link e dados do template ficam em um payload AES-256-GCM. A tabela expõe somente SHA-256 do destinatário, tipo e metadados operacionais. A chave da outbox é separada da chave MFA. Links vencidos mudam para `expired` e nunca são enviados. A migration inicial suporta uma versão de chave; rotação deve manter a versão antiga disponível até recifrar os itens pendentes.
+Destinatário, link e dados do template ficam em um payload AES-256-GCM, com nonce aleatório e AAD contendo a versão. A tabela expõe somente SHA-256 do destinatário, tipo e metadados operacionais. A chave da outbox é independente da chave MFA. Links vencidos mudam para `expired` antes do claim e nunca são enviados.
+
+O keyring lê a chave ativa e versões antigas listadas em `EMAIL_OUTBOX_DECRYPTION_KEYS` no formato `1:<base64>,2:<base64>`. Rotação operacional: gerar uma nova chave fora do repositório, manter a versão anterior no keyring, configurar a nova versão ativa, parar o worker, executar `go run ./cmd/email-key status`, depois `go run ./cmd/email-key rotate`, conferir que nenhum payload depende da versão antiga, reiniciar os processos e somente então retirar a chave antiga. O comando recifra todas as mensagens em uma única transação e não deve ser executado sem autorização e backup. Chaves MFA e outbox nunca são reutilizadas.
 
 ## Worker, retries e idempotência
 
@@ -41,7 +46,7 @@ cd backend
 go run ./cmd/email-worker
 ```
 
-O worker usa `FOR UPDATE SKIP LOCKED`, recupera locks abandonados após cinco minutos, timeout por chamada, shutdown por contexto, oito tentativas, backoff exponencial com jitter e falha terminal. Um envio por segundo e limite PostgreSQL de 100 entregas diárias protegem a franquia gratuita.
+O worker usa `FOR UPDATE SKIP LOCKED`, recupera locks abandonados após cinco minutos, timeout por chamada, shutdown por contexto, oito tentativas, backoff exponencial com jitter e falha terminal. Uma trava consultiva serializa a reserva da quota diária entre workers. Mensagens suprimidas terminam sem envio. A cada hora, mensagens terminais e eventos antigos são eliminados conforme `EMAIL_MESSAGE_RETENTION` e `EMAIL_EVENT_RETENTION`; supressões não são removidas automaticamente. Essa limpeza alcança apenas tabelas de e-mail e nunca auditoria comercial ou financeira.
 
 O header `Idempotency-Key` deriva da intenção local e permanece estável nos retries. O Resend retém a idempotência por 24 horas; portanto o sistema oferece entrega pelo menos uma vez com deduplicação local e do provedor, não exatamente uma vez.
 
@@ -49,17 +54,17 @@ O header `Idempotency-Key` deriva da intenção local e permanece estável nos r
 
 `POST /api/v1/webhooks/resend` lê o corpo bruto e valida `svix-id`, `svix-timestamp` e `svix-signature`, com tolerância de cinco minutos. Eventos são deduplicados pelo ID. `delivered`, `bounced`, `complained` e `delivery_delayed` atualizam a outbox. Bounce e complaint criam supressão por hash.
 
-A rota existe internamente, mas não foi publicada. O proxy Mercado Pago não deve ser reutilizado; uma allowlist separada será necessária na homologação externa.
+A rota existe internamente, mas não foi publicada. O ingresso futuro deve terminar HTTPS em proxy dedicado, aceitar exclusivamente `POST /api/v1/webhooks/resend`, preservar `svix-id`, `svix-timestamp` e `svix-signature`, limitar corpo e taxa, bloquear todas as demais rotas e não registrar corpo ou segredos. O proxy Mercado Pago não deve ser reutilizado.
 
 ## Eventos integrados
 
-- verificação, reenvio, redefinição e magic link usam os tokens atuais;
+- verificação inicial, reenvio, redefinição e magic link persistem token e intenção de envio na mesma transação PostgreSQL;
 - alteração de senha/MFA gera alerta sem incluir credenciais;
 - proposta enviada cria a outbox dentro da transação da proposta;
 - pagamento reconciliado como `paid` cria `order_confirmed` dentro da transação financeira e é deduplicado pelo evento comercial;
 - decisão da proposta utiliza o adaptador de outbox existente.
 
-Na implementação atual, a criação inicial de tokens de autenticação e o enqueue são duas transações consecutivas. Isso é fail-safe — não libera conta nem expõe token e permite reenvio — mas ainda existe uma janela de não entrega entre commits. Unificar essas operações na mesma unidade transacional permanece pendência antes da ativação de produção.
+Se o enqueue falhar, a transação remove o novo token e restaura implicitamente o token anterior. Reenvios concorrentes são serializados por identidade ou e-mail; a intenção anterior ainda pendente é encerrada como `superseded` antes da nova intenção. Nenhuma mensagem é entregue antes do commit: somente o worker lê registros confirmados.
 
 ## Domínio e segurança
 

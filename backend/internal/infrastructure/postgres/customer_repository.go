@@ -10,23 +10,56 @@ import (
 
 	app "example.com/loja-3d/backend/internal/application/customer"
 	domain "example.com/loja-3d/backend/internal/domain/customer"
+	"example.com/loja-3d/backend/internal/infrastructure/mail"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type CustomerRepository struct{ pool *pgxpool.Pool }
+type CustomerRepository struct {
+	pool        *pgxpool.Pool
+	emailOutbox *mail.Outbox
+}
 
-func NewCustomerRepository(p *pgxpool.Pool) *CustomerRepository { return &CustomerRepository{p} }
+func NewCustomerRepository(p *pgxpool.Pool) *CustomerRepository { return &CustomerRepository{pool: p} }
+func (r *CustomerRepository) SetEmailOutbox(value *mail.Outbox) { r.emailOutbox = value }
 func (r *CustomerRepository) CreateMagicLink(ctx context.Context, email, hash, ip string, expires time.Time) error {
+	return r.createMagicLink(ctx, email, hash, ip, expires, nil)
+}
+func (r *CustomerRepository) CreateMagicLinkWithEmail(ctx context.Context, email, hash, ip string, expires time.Time, intent app.MagicLinkIntent) error {
+	return r.createMagicLink(ctx, email, hash, ip, expires, &intent)
+}
+func (r *CustomerRepository) createMagicLink(ctx context.Context, email, hash, ip string, expires time.Time, intent *app.MagicLinkIntent) error {
+	tx, e := r.pool.Begin(ctx)
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback(ctx)
+	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended(lower($1),0))`, email); e != nil {
+		return e
+	}
 	var n int
-	if e := r.pool.QueryRow(ctx, `SELECT count(*) FROM customer_magic_links WHERE lower(email)=lower($1) AND created_at>now()-interval '15 minutes'`, email).Scan(&n); e != nil {
+	if e = tx.QueryRow(ctx, `SELECT count(*) FROM customer_magic_links WHERE lower(email)=lower($1) AND created_at>now()-interval '15 minutes'`, email).Scan(&n); e != nil {
 		return e
 	}
 	if n >= 3 {
 		return app.ErrRateLimited
 	}
-	_, e := r.pool.Exec(ctx, `INSERT INTO customer_magic_links(email,token_hash,requested_ip,expires_at) VALUES(lower($1),$2,nullif($3,'')::inet,$4)`, email, hash, ip, expires)
-	return e
+	_, e = tx.Exec(ctx, `INSERT INTO customer_magic_links(email,token_hash,requested_ip,expires_at) VALUES(lower($1),$2,nullif($3,'')::inet,$4)`, email, hash, ip, expires)
+	if e != nil {
+		return e
+	}
+	if intent != nil {
+		if r.emailOutbox == nil {
+			return errors.New("email outbox unavailable")
+		}
+		if e = r.emailOutbox.CancelPendingTx(ctx, tx, intent.To, "magic_link"); e != nil {
+			return e
+		}
+		if e = r.emailOutbox.EnqueueTx(ctx, tx, intent.To, "magic_link", mail.TemplateData{Link: intent.Link}); e != nil {
+			return e
+		}
+	}
+	return tx.Commit(ctx)
 }
 func (r *CustomerRepository) ConsumeMagicLink(ctx context.Context, hash, sessionHash, csrfHash, ip, ua string, expires time.Time) (domain.Session, error) {
 	tx, e := r.pool.Begin(ctx)

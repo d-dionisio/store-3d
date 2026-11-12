@@ -495,5 +495,7 @@ Ainda não foram implementados:
 - O worker PostgreSQL usa `SKIP LOCKED`, lock recuperável, backoff com jitter, limite de tentativas, expiração e idempotência estável. Resend implementa apenas `EmailSender` e não participa das regras de negócio.
 - Proposta enviada e pagamento confirmado gravam a intenção na mesma transação do evento comercial. Webhooks financeiros repetidos não criam e-mails duplicados.
 - O webhook Resend valida o corpo bruto segundo o esquema Svix e mantém deduplicação, estados de entrega e supressões. A rota não é exposta automaticamente.
-- Limites, DNS, rollback e a pendência de atomicidade dos tokens de autenticação estão em `docs/transactional-email.md`.
+- Tokens de verificação, recuperação e magic link são persistidos na mesma transação da intenção de envio; falha no enqueue reverte ambos e preserva o token anterior. Reenvios concorrentes são serializados.
+- A outbox usa keyring independente do MFA, recifra por `cmd/email-key`, encerra payloads expirados/suprimidos antes do envio e aplica retenção configurável somente às tabelas operacionais de e-mail.
+- Limites, rotação, retenção, ingresso HTTPS, DNS e rollback estão em `docs/transactional-email.md`.
 

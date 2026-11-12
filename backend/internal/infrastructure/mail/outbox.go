@@ -25,19 +25,35 @@ type Payload struct {
 	Data     TemplateData
 }
 type OutboxCipher struct {
-	key     []byte
+	keys    map[int16][]byte
 	Version int16
 }
 
 func NewOutboxCipher(encoded string, version int16) (*OutboxCipher, error) {
-	key, e := base64.StdEncoding.DecodeString(encoded)
-	if e != nil || len(key) != 32 || version < 1 {
+	return NewOutboxKeyring(version, map[int16]string{version: encoded})
+}
+func NewOutboxKeyring(active int16, encoded map[int16]string) (*OutboxCipher, error) {
+	if active < 1 || len(encoded) == 0 {
 		return nil, errors.New("email outbox key must contain 32 base64 bytes")
 	}
-	return &OutboxCipher{key, version}, nil
+	keys := make(map[int16][]byte, len(encoded))
+	for version, value := range encoded {
+		key, e := base64.StdEncoding.DecodeString(value)
+		if e != nil || len(key) != 32 || version < 1 {
+			return nil, errors.New("email outbox key must contain 32 base64 bytes")
+		}
+		keys[version] = key
+	}
+	if _, ok := keys[active]; !ok {
+		return nil, errors.New("active email outbox key is unavailable")
+	}
+	return &OutboxCipher{keys: keys, Version: active}, nil
 }
 func (c *OutboxCipher) encrypt(value []byte) ([]byte, error) {
-	block, e := aes.NewCipher(c.key)
+	return c.Encrypt(value)
+}
+func (c *OutboxCipher) Encrypt(value []byte) ([]byte, error) {
+	block, e := aes.NewCipher(c.keys[c.Version])
 	if e != nil {
 		return nil, e
 	}
@@ -52,10 +68,14 @@ func (c *OutboxCipher) encrypt(value []byte) ([]byte, error) {
 	return gcm.Seal(nonce, nonce, value, []byte(fmt.Sprintf("loja3d:email:v%d", c.Version))), nil
 }
 func (c *OutboxCipher) decrypt(value []byte, version int16) ([]byte, error) {
-	if version != c.Version {
+	return c.Decrypt(value, version)
+}
+func (c *OutboxCipher) Decrypt(value []byte, version int16) ([]byte, error) {
+	key, ok := c.keys[version]
+	if !ok {
 		return nil, errors.New("email outbox key version unavailable")
 	}
-	block, e := aes.NewCipher(c.key)
+	block, e := aes.NewCipher(key)
 	if e != nil {
 		return nil, e
 	}
@@ -100,6 +120,10 @@ func (o *Outbox) EnqueueTx(ctx context.Context, tx pgx.Tx, to, kind string, data
 	}
 	return e
 }
+func (o *Outbox) CancelPendingTx(ctx context.Context, tx pgx.Tx, to, kind string) error {
+	_, e := tx.Exec(ctx, `UPDATE email_outbox SET status='expired',processed_at=now(),locked_at=NULL,last_error_code='superseded' WHERE recipient_hash=$1 AND message_type=$2 AND status IN('pending','retry')`, hash(to), kind)
+	return e
+}
 func (o *Outbox) SendVerification(ctx context.Context, to, link string) error {
 	return o.enqueue(ctx, to, "verify_email", TemplateData{Link: link})
 }
@@ -125,7 +149,7 @@ type Item struct {
 }
 
 func (o *Outbox) Claim(ctx context.Context, limit int) ([]Item, error) {
-	rows, e := o.pool.Query(ctx, `WITH candidates AS (SELECT e.id FROM email_outbox e WHERE ((e.status IN('pending','retry') AND e.next_attempt_at<=now()) OR (e.status='processing' AND e.locked_at<now()-interval '5 minutes')) AND NOT EXISTS(SELECT 1 FROM email_suppressions s WHERE s.recipient_hash=e.recipient_hash) AND (SELECT count(*) FROM email_outbox WHERE provider_message_id IS NOT NULL AND processed_at>=date_trunc('day',now()))<100 ORDER BY e.created_at FOR UPDATE SKIP LOCKED LIMIT $1) UPDATE email_outbox e SET status='processing',locked_at=now(),attempts=attempts+1 FROM candidates c WHERE e.id=c.id RETURNING e.id,e.message_type,e.idempotency_key,e.payload_ciphertext,e.key_version,e.attempts,e.expires_at`, limit)
+	rows, e := o.pool.Query(ctx, `WITH quota_lock AS (SELECT pg_advisory_xact_lock(1280269391)), candidates AS (SELECT e.id FROM email_outbox e CROSS JOIN quota_lock WHERE e.expires_at>now() AND ((e.status IN('pending','retry') AND e.next_attempt_at<=now()) OR (e.status='processing' AND e.locked_at<now()-interval '5 minutes')) AND NOT EXISTS(SELECT 1 FROM email_suppressions s WHERE s.recipient_hash=e.recipient_hash) AND (SELECT count(*) FROM email_outbox WHERE (provider_message_id IS NOT NULL AND processed_at>=date_trunc('day',now())) OR (status='processing' AND locked_at>=date_trunc('day',now())))<100 ORDER BY e.created_at FOR UPDATE OF e SKIP LOCKED LIMIT $1) UPDATE email_outbox e SET status='processing',locked_at=now(),attempts=attempts+1 FROM candidates c WHERE e.id=c.id RETURNING e.id,e.message_type,e.idempotency_key,e.payload_ciphertext,e.key_version,e.attempts,e.expires_at`, limit)
 	if e != nil {
 		return nil, e
 	}
@@ -139,6 +163,36 @@ func (o *Outbox) Claim(ctx context.Context, limit int) ([]Item, error) {
 		result = append(result, i)
 	}
 	return result, rows.Err()
+}
+func (o *Outbox) ExpireDue(ctx context.Context) (int64, error) {
+	tag, e := o.pool.Exec(ctx, `UPDATE email_outbox SET status='expired',processed_at=now(),locked_at=NULL,last_error_code='expired' WHERE expires_at<=now() AND status IN('pending','retry','processing')`)
+	return tag.RowsAffected(), e
+}
+func (o *Outbox) SuppressPending(ctx context.Context) (int64, error) {
+	tag, e := o.pool.Exec(ctx, `UPDATE email_outbox e SET status='failed',processed_at=now(),locked_at=NULL,last_error_code='recipient_suppressed' FROM email_suppressions s WHERE s.recipient_hash=e.recipient_hash AND e.status IN('pending','retry')`)
+	return tag.RowsAffected(), e
+}
+func (o *Outbox) Cleanup(ctx context.Context, messageRetention, eventRetention time.Duration) (int64, int64, error) {
+	if messageRetention <= 0 || eventRetention <= 0 {
+		return 0, 0, errors.New("email retention must be positive")
+	}
+	tx, e := o.pool.Begin(ctx)
+	if e != nil {
+		return 0, 0, e
+	}
+	defer tx.Rollback(ctx)
+	messages, e := tx.Exec(ctx, `DELETE FROM email_outbox WHERE status IN('sent','delivered','bounced','complained','failed','expired') AND coalesce(processed_at,created_at)<now()-make_interval(secs=>$1)`, int64(messageRetention.Seconds()))
+	if e != nil {
+		return 0, 0, e
+	}
+	events, e := tx.Exec(ctx, `DELETE FROM email_delivery_events WHERE created_at<now()-make_interval(secs=>$1)`, int64(eventRetention.Seconds()))
+	if e != nil {
+		return 0, 0, e
+	}
+	if e = tx.Commit(ctx); e != nil {
+		return 0, 0, e
+	}
+	return messages.RowsAffected(), events.RowsAffected(), nil
 }
 func (o *Outbox) Message(item Item, from, reply string) (Message, error) {
 	plain, e := o.cipher.decrypt(item.Ciphertext, item.KeyVersion)
@@ -185,11 +239,12 @@ func (o *Outbox) Pending(ctx context.Context) (int64, error) {
 func IsPermanent(err error) bool { var target PermanentError; return errors.As(err, &target) }
 
 type Worker struct {
-	Outbox        *Outbox
-	Sender        EmailSender
-	From, ReplyTo string
-	Batch         int
-	Rate          time.Duration
+	Outbox                           *Outbox
+	Sender                           EmailSender
+	From, ReplyTo                    string
+	Batch                            int
+	Rate                             time.Duration
+	MessageRetention, EventRetention time.Duration
 }
 
 func (w Worker) Run(ctx context.Context) error {
@@ -199,13 +254,25 @@ func (w Worker) Run(ctx context.Context) error {
 	if w.Rate <= 0 {
 		w.Rate = time.Second
 	}
+	if w.MessageRetention <= 0 {
+		w.MessageRetention = 30 * 24 * time.Hour
+	}
+	if w.EventRetention <= 0 {
+		w.EventRetention = 90 * 24 * time.Hour
+	}
 	ticker := time.NewTicker(w.Rate)
+	cleanup := time.NewTicker(time.Hour)
 	defer ticker.Stop()
+	defer cleanup.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-cleanup.C:
+			_, _, _ = w.Outbox.Cleanup(ctx, w.MessageRetention, w.EventRetention)
 		case <-ticker.C:
+			_, _ = w.Outbox.ExpireDue(ctx)
+			_, _ = w.Outbox.SuppressPending(ctx)
 			items, e := w.Outbox.Claim(ctx, w.Batch)
 			if e != nil {
 				continue

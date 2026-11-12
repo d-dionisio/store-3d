@@ -80,7 +80,18 @@ func main() {
 	var customerMailer customerapp.Mailer = mail.Unavailable{}
 	var emailOutbox *mail.Outbox
 	emailKeyVersion, emailVersionErr := strconv.ParseInt(envOrDefault("EMAIL_OUTBOX_KEY_VERSION", "1"), 10, 16)
-	emailCipher, emailCipherErr := mail.NewOutboxCipher(os.Getenv("EMAIL_OUTBOX_ENCRYPTION_KEY"), int16(emailKeyVersion))
+	emailKeys := map[int16]string{int16(emailKeyVersion): os.Getenv("EMAIL_OUTBOX_ENCRYPTION_KEY")}
+	for _, entry := range strings.Split(os.Getenv("EMAIL_OUTBOX_DECRYPTION_KEYS"), ",") {
+		parts := strings.SplitN(strings.TrimSpace(entry), ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		version, parseKeyErr := strconv.ParseInt(parts[0], 10, 16)
+		if parseKeyErr == nil && version > 0 && parts[1] != "" {
+			emailKeys[int16(version)] = parts[1]
+		}
+	}
+	emailCipher, emailCipherErr := mail.NewOutboxKeyring(int16(emailKeyVersion), emailKeys)
 	if emailVersionErr == nil && emailCipherErr == nil {
 		emailOutbox = mail.NewOutbox(pool, emailCipher)
 		customerMailer = emailOutbox
@@ -110,7 +121,9 @@ func main() {
 	}
 	mfaCipher, cipherErr := securityauth.NewKeyring(mfaKeyVersion, mfaKeys)
 	if cipherErr == nil {
-		identityService = identityapp.New(postgres.NewIdentityRepository(pool), identityMailer, mfaCipher, emailPublicURL)
+		identityRepository := postgres.NewIdentityRepository(pool)
+		identityRepository.SetEmailOutbox(emailOutbox)
+		identityService = identityapp.New(identityRepository, identityMailer, mfaCipher, emailPublicURL)
 		if reauthTTL, ttlErr := time.ParseDuration(envOrDefault("AUTH_REAUTH_TTL", "5m")); ttlErr == nil {
 			identityService.SetReauthenticationTTL(reauthTTL)
 		}
@@ -128,6 +141,7 @@ func main() {
 	editorialService := editorialapp.New(postgres.NewEditorialRepository(pool), catalogRepository)
 	editorialHandler := handlers.NewEditorialHandler(editorialService, adminService)
 	customerRepository := postgres.NewCustomerRepository(pool)
+	customerRepository.SetEmailOutbox(emailOutbox)
 	customerService := customerapp.New(customerRepository, customerMailer, emailPublicURL)
 	customerHandler := handlers.NewCustomerHandler(customerService, appEnv == "production", identityService)
 	shippingRepository := postgres.NewShippingRepository(pool)

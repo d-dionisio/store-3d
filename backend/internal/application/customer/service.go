@@ -46,6 +46,10 @@ type Mailer interface {
 	SendMagicLink(context.Context, string, string) error
 	SendDecision(context.Context, string, string, string) error
 }
+type MagicLinkIntent struct{ To, Link string }
+type atomicMagicLinkRepository interface {
+	CreateMagicLinkWithEmail(context.Context, string, string, string, time.Time, MagicLinkIntent) error
+}
 type Service struct {
 	repo      Repository
 	mailer    Mailer
@@ -77,10 +81,20 @@ func (s *Service) RequestMagicLink(ctx context.Context, email, ip string) error 
 	if e != nil {
 		return e
 	}
-	if e = s.repo.CreateMagicLink(ctx, email, hash, ip, s.now().Add(15*time.Minute)); e != nil {
+	expires := s.now().Add(15 * time.Minute)
+	link := s.publicURL + "/minha-conta/confirmar?token=" + raw
+	if atomic, ok := s.repo.(atomicMagicLinkRepository); ok {
+		e = atomic.CreateMagicLinkWithEmail(ctx, email, hash, ip, expires, MagicLinkIntent{To: email, Link: link})
+	} else {
+		e = s.repo.CreateMagicLink(ctx, email, hash, ip, expires)
+	}
+	if e != nil {
 		return e
 	}
-	return s.mailer.SendMagicLink(ctx, email, s.publicURL+"/minha-conta/confirmar?token="+raw)
+	if _, ok := s.repo.(atomicMagicLinkRepository); ok {
+		return nil
+	}
+	return s.mailer.SendMagicLink(ctx, email, link)
 }
 func (s *Service) VerifyMagicLink(ctx context.Context, raw, ip, ua string) (domain.Session, string, string, error) {
 	sessionRaw, sessionHash, e := token()

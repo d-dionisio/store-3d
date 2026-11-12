@@ -6,16 +6,21 @@ import (
 	"time"
 
 	app "example.com/loja-3d/backend/internal/application/identity"
+	"example.com/loja-3d/backend/internal/infrastructure/mail"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type IdentityRepository struct{ pool *pgxpool.Pool }
+type IdentityRepository struct {
+	pool        *pgxpool.Pool
+	emailOutbox *mail.Outbox
+}
 
 func NewIdentityRepository(pool *pgxpool.Pool) *IdentityRepository {
 	return &IdentityRepository{pool: pool}
 }
+func (r *IdentityRepository) SetEmailOutbox(value *mail.Outbox) { r.emailOutbox = value }
 func noRows(err error) error {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.ErrUnauthorized
@@ -56,6 +61,12 @@ func (r *IdentityRepository) FindIdentityByID(ctx context.Context, kind, id stri
 	return v, noRows(e)
 }
 func (r *IdentityRepository) RegisterCustomer(ctx context.Context, name, email, passwordHash, tokenHash string, expires time.Time) (app.Identity, error) {
+	return r.registerCustomer(ctx, name, email, passwordHash, tokenHash, expires, nil)
+}
+func (r *IdentityRepository) RegisterCustomerWithEmail(ctx context.Context, name, email, passwordHash, tokenHash string, expires time.Time, intent app.EmailIntent) (app.Identity, error) {
+	return r.registerCustomer(ctx, name, email, passwordHash, tokenHash, expires, &intent)
+}
+func (r *IdentityRepository) registerCustomer(ctx context.Context, name, email, passwordHash, tokenHash string, expires time.Time, intent *app.EmailIntent) (app.Identity, error) {
 	tx, e := r.pool.Begin(ctx)
 	if e != nil {
 		return app.Identity{}, e
@@ -71,20 +82,48 @@ func (r *IdentityRepository) RegisterCustomer(ctx context.Context, name, email, 
 	if e != nil {
 		return v, e
 	}
+	if intent != nil {
+		if r.emailOutbox == nil {
+			return v, app.ErrUnavailable
+		}
+		if e = r.emailOutbox.EnqueueTx(ctx, tx, intent.To, intent.Kind, mail.TemplateData{Link: intent.Link}); e != nil {
+			return v, e
+		}
+	}
 	return v, tx.Commit(ctx)
 }
 func (r *IdentityRepository) CreateCustomerToken(ctx context.Context, userID, purpose, hash string, expires time.Time) error {
+	return r.createCustomerToken(ctx, userID, purpose, hash, expires, nil)
+}
+func (r *IdentityRepository) CreateCustomerTokenWithEmail(ctx context.Context, userID, purpose, hash string, expires time.Time, intent app.EmailIntent) error {
+	return r.createCustomerToken(ctx, userID, purpose, hash, expires, &intent)
+}
+func (r *IdentityRepository) createCustomerToken(ctx context.Context, userID, purpose, hash string, expires time.Time, intent *app.EmailIntent) error {
 	tx, e := r.pool.Begin(ctx)
 	if e != nil {
 		return e
 	}
 	defer tx.Rollback(ctx)
+	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, userID+":"+purpose); e != nil {
+		return e
+	}
 	_, e = tx.Exec(ctx, `UPDATE customer_auth_tokens SET consumed_at=coalesce(consumed_at,now()) WHERE user_id=$1 AND purpose=$2 AND consumed_at IS NULL`, userID, purpose)
 	if e == nil {
 		_, e = tx.Exec(ctx, `INSERT INTO customer_auth_tokens(user_id,purpose,token_hash,expires_at) VALUES($1,$2,$3,$4)`, userID, purpose, hash, expires)
 	}
 	if e != nil {
 		return e
+	}
+	if intent != nil {
+		if r.emailOutbox == nil {
+			return app.ErrUnavailable
+		}
+		if e = r.emailOutbox.CancelPendingTx(ctx, tx, intent.To, intent.Kind); e != nil {
+			return e
+		}
+		if e = r.emailOutbox.EnqueueTx(ctx, tx, intent.To, intent.Kind, mail.TemplateData{Link: intent.Link}); e != nil {
+			return e
+		}
 	}
 	return tx.Commit(ctx)
 }

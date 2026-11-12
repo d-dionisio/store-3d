@@ -84,6 +84,13 @@ type Mailer interface {
 	SendVerification(context.Context, string, string) error
 	SendPasswordReset(context.Context, string, string) error
 }
+type EmailIntent struct {
+	To, Kind, Link string
+}
+type atomicEmailRepository interface {
+	RegisterCustomerWithEmail(context.Context, string, string, string, string, time.Time, EmailIntent) (Identity, error)
+	CreateCustomerTokenWithEmail(context.Context, string, string, string, time.Time, EmailIntent) error
+}
 type securityMailer interface {
 	SendSecurityEvent(context.Context, string, string) error
 }
@@ -140,12 +147,22 @@ func (s *Service) Register(ctx context.Context, name, email, password, ip string
 	if e != nil {
 		return e
 	}
-	identity, e := s.repo.RegisterCustomer(ctx, name, email, hash, tokenHash, s.now().Add(30*time.Minute))
+	expires := s.now().Add(30 * time.Minute)
+	link := s.publicURL + "/verificar-email?token=" + raw
+	var identity Identity
+	if atomic, ok := s.repo.(atomicEmailRepository); ok {
+		identity, e = atomic.RegisterCustomerWithEmail(ctx, name, email, hash, tokenHash, expires, EmailIntent{To: email, Kind: "verify_email", Link: link})
+	} else {
+		identity, e = s.repo.RegisterCustomer(ctx, name, email, hash, tokenHash, expires)
+	}
 	if e != nil {
 		return e
 	}
 	_ = s.repo.SecurityEvent(ctx, "customer", &identity.ID, "customer.register", "success", ip)
-	if e = s.mailer.SendVerification(ctx, email, s.publicURL+"/verificar-email?token="+raw); e != nil {
+	if _, ok := s.repo.(atomicEmailRepository); !ok {
+		e = s.mailer.SendVerification(ctx, email, link)
+	}
+	if e != nil {
 		return ErrUnavailable
 	}
 	return nil
@@ -181,10 +198,20 @@ func (s *Service) ResendVerification(ctx context.Context, email, ip string) erro
 	if e != nil {
 		return e
 	}
-	if e = s.repo.CreateCustomerToken(ctx, identity.ID, "verify_email", hash, s.now().Add(30*time.Minute)); e != nil {
+	expires := s.now().Add(30 * time.Minute)
+	link := s.publicURL + "/verificar-email?token=" + raw
+	if atomic, ok := s.repo.(atomicEmailRepository); ok {
+		e = atomic.CreateCustomerTokenWithEmail(ctx, identity.ID, "verify_email", hash, expires, EmailIntent{To: email, Kind: "verify_email", Link: link})
+	} else {
+		e = s.repo.CreateCustomerToken(ctx, identity.ID, "verify_email", hash, expires)
+	}
+	if e != nil {
 		return e
 	}
-	if e = s.mailer.SendVerification(ctx, email, s.publicURL+"/verificar-email?token="+raw); e != nil {
+	if _, ok := s.repo.(atomicEmailRepository); !ok {
+		e = s.mailer.SendVerification(ctx, email, link)
+	}
+	if e != nil {
 		return ErrUnavailable
 	}
 	return nil
@@ -205,10 +232,20 @@ func (s *Service) RequestReset(ctx context.Context, email, ip string) error {
 	if e != nil {
 		return e
 	}
-	if e = s.repo.CreateCustomerToken(ctx, identity.ID, "reset_password", hash, s.now().Add(20*time.Minute)); e != nil {
+	expires := s.now().Add(20 * time.Minute)
+	link := s.publicURL + "/redefinir-senha?token=" + raw
+	if atomic, ok := s.repo.(atomicEmailRepository); ok {
+		e = atomic.CreateCustomerTokenWithEmail(ctx, identity.ID, "reset_password", hash, expires, EmailIntent{To: email, Kind: "password_reset", Link: link})
+	} else {
+		e = s.repo.CreateCustomerToken(ctx, identity.ID, "reset_password", hash, expires)
+	}
+	if e != nil {
 		return e
 	}
-	if e = s.mailer.SendPasswordReset(ctx, email, s.publicURL+"/redefinir-senha?token="+raw); e != nil {
+	if _, ok := s.repo.(atomicEmailRepository); !ok {
+		e = s.mailer.SendPasswordReset(ctx, email, link)
+	}
+	if e != nil {
 		return ErrUnavailable
 	}
 	return nil

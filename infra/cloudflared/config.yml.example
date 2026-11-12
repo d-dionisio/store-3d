@@ -1,0 +1,28 @@
+# Reference only. Do not commit the tunnel credentials JSON.
+tunnel: <TUNNEL_UUID>
+credentials-file: C:\\ProgramData\\cloudflared\\<TUNNEL_UUID>.json
+
+originRequest:
+  connectTimeout: 10s
+
+ingress:
+  - hostname: loja.example.com
+    service: http://127.0.0.1:8081
+
+  # Protect this entire hostname with a Cloudflare Access self-hosted app.
+  - hostname: admin.example.com
+    service: http://127.0.0.1:8082
+    originRequest:
+      # cloudflared validates the signed Access JWT before reaching the gateway.
+      access:
+        required: true
+        teamName: <CLOUDFLARE_TEAM_NAME>
+        audTag:
+          - <ACCESS_APPLICATION_AUD_TAG>
+
+  # Dedicated webhook origin: only the exact provider route reaches port 8090.
+  - hostname: webhooks.example.com
+    path: ^/api/v1/webhooks/mercado-pago/?$
+    service: http://127.0.0.1:8090
+
+  - service: http_status:404

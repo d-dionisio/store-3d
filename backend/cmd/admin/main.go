@@ -1,41 +1,76 @@
 package main
 
 import (
+	"bufio"
 	"context"
-	"example.com/loja-3d/backend/internal/infrastructure/postgres"
+	"errors"
 	"fmt"
-	"golang.org/x/crypto/bcrypt"
 	"os"
 	"strings"
+
+	adminapp "example.com/loja-3d/backend/internal/application/admin"
+	"example.com/loja-3d/backend/internal/infrastructure/postgres"
+	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/term"
 )
 
 func main() {
-	email := strings.ToLower(strings.TrimSpace(os.Getenv("ADMIN_EMAIL")))
-	name := strings.TrimSpace(os.Getenv("ADMIN_NAME"))
-	password := os.Getenv("ADMIN_PASSWORD")
-	if email == "" || name == "" || len(password) < 12 {
-		fmt.Fprintln(os.Stderr, "ADMIN_EMAIL, ADMIN_NAME and ADMIN_PASSWORD (minimum 12 characters) are required")
+	if len(os.Args) != 2 || os.Args[1] != "bootstrap" {
+		fmt.Fprintln(os.Stderr, "usage: go run ./cmd/admin bootstrap")
 		os.Exit(2)
+	}
+	if os.Getenv("ADMIN_BOOTSTRAP_ENABLED") != "true" {
+		fail("bootstrap disabled; set ADMIN_BOOTSTRAP_ENABLED=true only for the initial authorized operation")
+	}
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		fail("bootstrap requires an interactive terminal")
+	}
+	reader := bufio.NewReader(os.Stdin)
+	email := prompt(reader, "E-mail: ")
+	name := prompt(reader, "Nome completo: ")
+	password := secret("Senha (mínimo 12 caracteres): ")
+	confirmation := secret("Confirme a senha: ")
+	if !strings.Contains(email, "@") || name == "" || len(password) < 12 || len(password) > 128 || password != confirmation {
+		fmt.Fprintln(os.Stderr, "dados inválidos ou senhas diferentes")
+		os.Exit(2)
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	password, confirmation = "", ""
+	if err != nil {
+		fail("could not hash password")
 	}
 	config, err := postgres.LoadConfig()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "invalid database configuration")
-		os.Exit(1)
+		fail("invalid database configuration")
 	}
-	pool, err := postgres.NewPool(context.Background(), config)
+	ctx := context.Background()
+	pool, err := postgres.NewPool(ctx, config)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "database unavailable")
-		os.Exit(1)
+		fail("database unavailable")
 	}
 	defer pool.Close()
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		os.Exit(1)
+	user, err := postgres.NewAdminRepository(pool).BootstrapAdmin(ctx, strings.ToLower(strings.TrimSpace(email)), name, string(hash))
+	if errors.Is(err, adminapp.ErrForbidden) {
+		fail("bootstrap permanently unavailable: an internal user already exists")
 	}
-	_, err = pool.Exec(context.Background(), `INSERT INTO admin_users(email,full_name,password_hash,role) VALUES($1,$2,$3,'admin') ON CONFLICT((lower(email))) DO UPDATE SET full_name=excluded.full_name,password_hash=excluded.password_hash,status='active',updated_at=now()`, email, name, string(hash))
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "could not create administrator")
-		os.Exit(1)
+		fail("could not create initial administrator")
 	}
-	fmt.Println("administrator created or updated")
+	fmt.Printf("initial administrator created: %s (%s)\n", user.Email, user.ID)
 }
+
+func prompt(reader *bufio.Reader, label string) string {
+	fmt.Fprint(os.Stderr, label)
+	value, _ := reader.ReadString('\n')
+	return strings.TrimSpace(value)
+}
+func secret(label string) string {
+	fmt.Fprint(os.Stderr, label)
+	value, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		fail("could not read password")
+	}
+	return string(value)
+}
+func fail(message string) { fmt.Fprintln(os.Stderr, message); os.Exit(1) }

@@ -35,7 +35,9 @@ func adminError(w http.ResponseWriter, err error) {
 	case errors.Is(err, app.ErrForbidden):
 		writeQuoteJSON(w, 403, map[string]any{"error": map[string]string{"code": "forbidden", "message": "Acesso negado."}})
 	case errors.Is(err, app.ErrInvalid):
-		writeQuoteJSON(w, 400, map[string]any{"error": map[string]string{"code": "invalid_request", "message": "Filtros inválidos."}})
+		writeQuoteJSON(w, 400, map[string]any{"error": map[string]string{"code": "invalid_request", "message": "Dados inválidos."}})
+	case errors.Is(err, app.ErrConflict):
+		writeQuoteJSON(w, 409, map[string]any{"error": map[string]string{"code": "conflict", "message": "O e-mail informado já pertence a outro usuário."}})
 	case errors.Is(err, domain.ErrInvalidPricing):
 		writeQuoteJSON(w, 400, map[string]any{"error": map[string]string{"code": "invalid_pricing", "message": "Composição de preço inválida."}})
 	case errors.Is(err, domain.ErrInvalidTransition):
@@ -52,6 +54,13 @@ func (h *AdminHandler) session(r *http.Request) (domain.Session, error) {
 		return domain.Session{}, app.ErrUnauthorized
 	}
 	return h.service.Authenticate(r.Context(), cookie.Value)
+}
+func (h *AdminHandler) mutationSession(r *http.Request) (domain.Session, error) {
+	session, err := h.session(r)
+	if err == nil && !app.ConstantHashEqual(r.Header.Get("X-CSRF-Token"), session.CSRFHash) {
+		err = app.ErrForbidden
+	}
+	return session, err
 }
 func (h *AdminHandler) Login(w http.ResponseWriter, r *http.Request) {
 	if !h.limiter.Allow(adminIP(r)) {
@@ -89,6 +98,94 @@ func (h *AdminHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: "loja3d_admin_session", Value: "", Path: "/", HttpOnly: true, Secure: h.secureCookies, SameSite: http.SameSiteStrictMode, MaxAge: -1})
+	w.WriteHeader(http.StatusNoContent)
+}
+func (h *AdminHandler) ListInternalUsers(w http.ResponseWriter, r *http.Request) {
+	session, err := h.session(r)
+	if err != nil {
+		adminError(w, err)
+		return
+	}
+	users, err := h.service.ListInternalUsers(r.Context(), session)
+	if err != nil {
+		adminError(w, err)
+		return
+	}
+	writeQuoteJSON(w, http.StatusOK, map[string]any{"data": users})
+}
+func (h *AdminHandler) CreateInternalUser(w http.ResponseWriter, r *http.Request) {
+	session, err := h.mutationSession(r)
+	if err != nil {
+		adminError(w, err)
+		return
+	}
+	var body struct {
+		Email    string `json:"email"`
+		FullName string `json:"full_name"`
+		Password string `json:"password"`
+		Role     string `json:"role"`
+	}
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&body) != nil {
+		adminError(w, app.ErrInvalid)
+		return
+	}
+	user, err := h.service.CreateInternalUser(r.Context(), session, body.Email, body.FullName, body.Password, body.Role, adminIP(r))
+	if err != nil {
+		adminError(w, err)
+		return
+	}
+	writeQuoteJSON(w, http.StatusCreated, map[string]any{"data": user})
+}
+func (h *AdminHandler) UpdateInternalUser(w http.ResponseWriter, r *http.Request) {
+	session, err := h.mutationSession(r)
+	if err != nil {
+		adminError(w, err)
+		return
+	}
+	var body struct {
+		Role   string `json:"role"`
+		Status string `json:"status"`
+	}
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body) != nil {
+		adminError(w, app.ErrInvalid)
+		return
+	}
+	user, err := h.service.UpdateInternalUser(r.Context(), session, r.PathValue("id"), body.Role, body.Status, adminIP(r))
+	if err != nil {
+		adminError(w, err)
+		return
+	}
+	writeQuoteJSON(w, http.StatusOK, map[string]any{"data": user})
+}
+func (h *AdminHandler) ResetInternalUserPassword(w http.ResponseWriter, r *http.Request) {
+	session, err := h.mutationSession(r)
+	if err != nil {
+		adminError(w, err)
+		return
+	}
+	var body struct {
+		Password string `json:"password"`
+	}
+	if json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body) != nil {
+		adminError(w, app.ErrInvalid)
+		return
+	}
+	if err = h.service.ResetInternalUserPassword(r.Context(), session, r.PathValue("id"), body.Password, adminIP(r)); err != nil {
+		adminError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+func (h *AdminHandler) RevokeInternalUserSessions(w http.ResponseWriter, r *http.Request) {
+	session, err := h.mutationSession(r)
+	if err != nil {
+		adminError(w, err)
+		return
+	}
+	if err = h.service.RevokeInternalUserSessions(r.Context(), session, r.PathValue("id"), adminIP(r)); err != nil {
+		adminError(w, err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 func (h *AdminHandler) Stats(w http.ResponseWriter, r *http.Request) {

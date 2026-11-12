@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	app "example.com/loja-3d/backend/internal/application/admin"
+	domain "example.com/loja-3d/backend/internal/domain/admin"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 	"os"
 	"testing"
+	"time"
 )
 
 func adminPool(t *testing.T) *pgxpool.Pool {
@@ -22,6 +25,96 @@ func adminPool(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 	return pool
+}
+func TestBootstrapAdminOneShotIntegration(t *testing.T) {
+	ctx := context.Background()
+	base := adminPool(t)
+	schema := "bootstrap_" + time.Now().Format("150405000000000")
+	identifier := pgx.Identifier{schema}.Sanitize()
+	_, err := base.Exec(ctx, `CREATE SCHEMA `+identifier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = base.Exec(ctx, `DROP SCHEMA IF EXISTS `+identifier+` CASCADE`) })
+	_, err = base.Exec(ctx, `CREATE TABLE `+identifier+`.admin_users (id UUID PRIMARY KEY DEFAULT gen_random_uuid(),email TEXT NOT NULL,full_name TEXT NOT NULL,password_hash TEXT NOT NULL,role TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'active',last_login_at TIMESTAMPTZ,created_at TIMESTAMPTZ NOT NULL DEFAULT now(),updated_at TIMESTAMPTZ NOT NULL DEFAULT now()); CREATE TABLE `+identifier+`.admin_audit_events (id UUID PRIMARY KEY DEFAULT gen_random_uuid(),admin_user_id UUID,action TEXT NOT NULL,resource_type TEXT,resource_id TEXT,outcome TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT now())`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := pgxpool.ParseConfig(os.Getenv("TEST_DATABASE_URL"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	config.ConnConfig.RuntimeParams["search_path"] = schema
+	isolated, err := pgxpool.NewWithConfig(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer isolated.Close()
+	repo := NewAdminRepository(isolated)
+	hash, _ := bcrypt.GenerateFromPassword([]byte("Bootstrap-Integration-2026!"), bcrypt.MinCost)
+	created, err := repo.BootstrapAdmin(ctx, "first@example.com", "First Admin", string(hash))
+	if err != nil || created.Role != "admin" || created.Status != "active" {
+		t.Fatalf("bootstrap failed: user=%+v err=%v", created, err)
+	}
+	if _, err = repo.BootstrapAdmin(ctx, "second@example.com", "Second Admin", string(hash)); !errors.Is(err, app.ErrForbidden) {
+		t.Fatalf("second bootstrap not blocked: %v", err)
+	}
+}
+
+func TestInternalUserManagementAndBootstrapGuardIntegration(t *testing.T) {
+	ctx := context.Background()
+	pool := adminPool(t)
+	suffix := time.Now().Format("150405.000000000")
+	actorHash, _ := bcrypt.GenerateFromPassword([]byte("Actor-Integration-2026!"), bcrypt.MinCost)
+	var actorID string
+	err := pool.QueryRow(ctx, `INSERT INTO admin_users(email,full_name,password_hash,role) VALUES($1,'Actor Admin',$2,'admin') RETURNING id`, "actor-"+suffix+"@example.com", string(actorHash)).Scan(&actorID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := NewAdminRepository(pool)
+	service := app.New(repo)
+	actor := adminSession(actorID, "admin")
+	created, err := service.CreateInternalUser(ctx, actor, "operator-"+suffix+"@example.com", "Production Operator", "Operator-Password-2026!", "production_operator", "127.0.0.1")
+	if err != nil {
+		t.Fatalf("create operator: %v", err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(ctx, `DELETE FROM admin_users WHERE id IN($1,$2)`, actorID, created.ID) })
+	operatorSession, token, _, err := service.Login(ctx, created.Email, "Operator-Password-2026!", "127.0.0.1", "test")
+	if err != nil || token == "" {
+		t.Fatalf("operator login: %v", err)
+	}
+	if _, err = service.CreateInternalUser(ctx, operatorSession, "forbidden@example.com", "Forbidden", "Forbidden-Password-2026!", "admin", "127.0.0.1"); !errors.Is(err, app.ErrForbidden) {
+		t.Fatalf("privilege escalation not blocked: %v", err)
+	}
+	if _, err = service.UpdateInternalUser(ctx, actor, actorID, "quote_viewer", "active", "127.0.0.1"); !errors.Is(err, app.ErrInvalid) {
+		t.Fatalf("self demotion not blocked: %v", err)
+	}
+	if err = service.ResetInternalUserPassword(ctx, actor, created.ID, "New-Operator-Password-2026!", "127.0.0.1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = service.Authenticate(ctx, token); !errors.Is(err, app.ErrUnauthorized) {
+		t.Fatalf("password reset did not revoke session: %v", err)
+	}
+	updated, err := service.UpdateInternalUser(ctx, actor, created.ID, "production_operator", "blocked", "127.0.0.1")
+	if err != nil || updated.Status != "blocked" {
+		t.Fatalf("block user: %v", err)
+	}
+	if _, _, _, err = service.Login(ctx, created.Email, "New-Operator-Password-2026!", "127.0.0.1", "test"); !errors.Is(err, app.ErrUnauthorized) {
+		t.Fatalf("blocked account logged in: %v", err)
+	}
+	bootstrapHash, _ := bcrypt.GenerateFromPassword([]byte("Bootstrap-Password-2026!"), bcrypt.MinCost)
+	if _, err = repo.BootstrapAdmin(ctx, "bootstrap@example.com", "Bootstrap", string(bootstrapHash)); !errors.Is(err, app.ErrForbidden) {
+		t.Fatalf("bootstrap guard failed: %v", err)
+	}
+	var auditCount int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM admin_audit_events WHERE admin_user_id=$1 AND action LIKE 'admin_user.%'`, actorID).Scan(&auditCount); err != nil || auditCount < 3 {
+		t.Fatalf("missing management audit: count=%d err=%v", auditCount, err)
+	}
+}
+
+func adminSession(id, role string) (session domain.Session) {
+	session.UserID, session.Role = id, role
+	return
 }
 func TestAdminAuthenticationAuthorizationAndAuditIntegration(t *testing.T) {
 	ctx := context.Background()

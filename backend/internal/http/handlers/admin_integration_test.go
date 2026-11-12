@@ -3,6 +3,7 @@ package handlers_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	adminapp "example.com/loja-3d/backend/internal/application/admin"
 	apihttp "example.com/loja-3d/backend/internal/http"
 	"example.com/loja-3d/backend/internal/http/handlers"
@@ -13,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 )
 
 type readyStub struct{}
@@ -43,6 +45,12 @@ func TestAdminHTTPAuthorizationIntegration(t *testing.T) {
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthorized status=%d", response.Code)
 	}
+	invalidLogin := httptest.NewRequest(http.MethodPost, "/api/v1/admin/session", bytes.NewBufferString(`{"email":"http-admin@example.com","password":"wrong-password"}`))
+	invalidLoginResponse := httptest.NewRecorder()
+	router.ServeHTTP(invalidLoginResponse, invalidLogin)
+	if invalidLoginResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid login status=%d", invalidLoginResponse.Code)
+	}
 	login := httptest.NewRequest(http.MethodPost, "/api/v1/admin/session", bytes.NewBufferString(`{"email":"http-admin@example.com","password":"HTTP-Integration-2026!"}`))
 	login.Header.Set("Content-Type", "application/json")
 	loginResponse := httptest.NewRecorder()
@@ -61,4 +69,30 @@ func TestAdminHTTPAuthorizationIntegration(t *testing.T) {
 	if authorizedResponse.Code != http.StatusOK {
 		t.Fatalf("authorized status=%d body=%s", authorizedResponse.Code, authorizedResponse.Body.String())
 	}
+	var loginBody struct {
+		Data struct {
+			CSRFToken string `json:"csrf_token"`
+		} `json:"data"`
+	}
+	if err = json.Unmarshal(loginResponse.Body.Bytes(), &loginBody); err != nil || loginBody.Data.CSRFToken == "" {
+		t.Fatalf("missing csrf: %v", err)
+	}
+	email := "http-operator-" + time.Now().Format("150405000000000") + "@example.com"
+	body := []byte(`{"email":"` + email + `","full_name":"HTTP Operator","password":"HTTP-Operator-2026!","role":"quote_viewer"}`)
+	withoutCSRF := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users", bytes.NewReader(body))
+	withoutCSRF.AddCookie(cookies[0])
+	withoutCSRFResponse := httptest.NewRecorder()
+	router.ServeHTTP(withoutCSRFResponse, withoutCSRF)
+	if withoutCSRFResponse.Code != http.StatusForbidden {
+		t.Fatalf("missing csrf status=%d", withoutCSRFResponse.Code)
+	}
+	create := httptest.NewRequest(http.MethodPost, "/api/v1/admin/users", bytes.NewReader(body))
+	create.AddCookie(cookies[0])
+	create.Header.Set("X-CSRF-Token", loginBody.Data.CSRFToken)
+	createResponse := httptest.NewRecorder()
+	router.ServeHTTP(createResponse, create)
+	if createResponse.Code != http.StatusCreated {
+		t.Fatalf("create user status=%d body=%s", createResponse.Code, createResponse.Body.String())
+	}
+	defer pool.Exec(context.Background(), `DELETE FROM admin_users WHERE lower(email)=lower($1)`, email)
 }

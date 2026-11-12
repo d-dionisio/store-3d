@@ -17,6 +17,7 @@ var ErrUnauthorized = errors.New("unauthorized")
 var ErrForbidden = errors.New("forbidden")
 var ErrNotFound = errors.New("not found")
 var ErrInvalid = errors.New("invalid")
+var ErrConflict = errors.New("conflict")
 
 type Repository interface {
 	FindUserByEmail(context.Context, string) (domain.User, error)
@@ -32,6 +33,11 @@ type Repository interface {
 	SavePricing(context.Context, string, string, domain.Pricing) error
 	SendProposal(context.Context, string, string) error
 	ExpireProposals(context.Context, string) (int64, error)
+	ListInternalUsers(context.Context) ([]domain.InternalUser, error)
+	CreateInternalUser(context.Context, string, string, string, string, string) (domain.InternalUser, error)
+	UpdateInternalUser(context.Context, string, string, string, string) (domain.InternalUser, error)
+	ResetInternalUserPassword(context.Context, string, string, string) error
+	RevokeInternalUserSessions(context.Context, string, string) error
 }
 
 func (s *Service) StartAnalysis(ctx context.Context, u domain.Session, ref, ip string) error {
@@ -65,6 +71,63 @@ type Service struct {
 }
 
 func New(repo Repository) *Service { return &Service{repo: repo, sessionTTL: 8 * time.Hour} }
+
+var internalRoles = map[string]bool{"admin": true, "quote_viewer": true, "production_operator": true, "production_manager": true}
+
+func validatePassword(password string) error {
+	if len(password) < 12 || len(password) > 128 {
+		return ErrInvalid
+	}
+	return nil
+}
+func (s *Service) ListInternalUsers(ctx context.Context, session domain.Session) ([]domain.InternalUser, error) {
+	if session.Role != "admin" {
+		return nil, ErrForbidden
+	}
+	return s.repo.ListInternalUsers(ctx)
+}
+func (s *Service) CreateInternalUser(ctx context.Context, session domain.Session, email, name, password, role, ip string) (domain.InternalUser, error) {
+	email, name, role = strings.ToLower(strings.TrimSpace(email)), strings.TrimSpace(name), strings.TrimSpace(role)
+	if session.Role != "admin" {
+		return domain.InternalUser{}, ErrForbidden
+	}
+	if !strings.Contains(email, "@") || name == "" || !internalRoles[role] || validatePassword(password) != nil {
+		return domain.InternalUser{}, ErrInvalid
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return domain.InternalUser{}, err
+	}
+	return s.repo.CreateInternalUser(ctx, email, name, string(hash), role, session.UserID)
+}
+func (s *Service) UpdateInternalUser(ctx context.Context, session domain.Session, id, role, status, ip string) (domain.InternalUser, error) {
+	if session.Role != "admin" {
+		return domain.InternalUser{}, ErrForbidden
+	}
+	if !internalRoles[role] || (status != "active" && status != "blocked") || (id == session.UserID && (role != "admin" || status != "active")) {
+		return domain.InternalUser{}, ErrInvalid
+	}
+	return s.repo.UpdateInternalUser(ctx, id, role, status, session.UserID)
+}
+func (s *Service) ResetInternalUserPassword(ctx context.Context, session domain.Session, id, password, ip string) error {
+	if session.Role != "admin" {
+		return ErrForbidden
+	}
+	if validatePassword(password) != nil {
+		return ErrInvalid
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	return s.repo.ResetInternalUserPassword(ctx, id, string(hash), session.UserID)
+}
+func (s *Service) RevokeInternalUserSessions(ctx context.Context, session domain.Session, id, ip string) error {
+	if session.Role != "admin" {
+		return ErrForbidden
+	}
+	return s.repo.RevokeInternalUserSessions(ctx, id, session.UserID)
+}
 func randomToken() (string, string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {

@@ -67,16 +67,17 @@ Para uploads de orçamento, configure `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_K
 
 ### Administrador local
 
-Depois de aplicar a migration 10, crie ou rotacione uma conta sem colocar a senha em argumentos de linha de comando:
+Depois de aplicar as migrations, crie o primeiro administrador em um terminal interativo:
 
 ```powershell
-$env:ADMIN_EMAIL = "admin@example.com"
-$env:ADMIN_NAME = "Administrador"
-$env:ADMIN_PASSWORD = Read-Host "Senha administrativa"
-go run ./cmd/admin
+$env:ADMIN_BOOTSTRAP_ENABLED = "true"
+go run ./cmd/admin bootstrap
+$env:ADMIN_BOOTSTRAP_ENABLED = "false"
 ```
 
-Use ao menos 12 caracteres. Inicie a API com `APP_ENV=production` em produção para exigir cookie Secure. O painel fica em `http://localhost:3000/admin/login`.
+O comando solicita e-mail, nome e confirmação de senha sem ecoá-la. Ele exige ao menos 12 caracteres, terminal interativo, autorização explícita e banco sem nenhum usuário interno. Após a primeira conta, o bootstrap fica permanentemente bloqueado. Inicie a API com `APP_ENV=production` em produção para exigir cookie Secure. O painel fica em `http://localhost:3000/admin/login`.
+
+Administradores autenticados podem gerenciar contas pelos endpoints `/api/v1/admin/users`. Toda mutação exige `X-CSRF-Token`; reset de senha, bloqueio e revogação encerram sessões conforme documentado em `docs/access-operations.md`.
 
 ### Migrations
 
@@ -246,7 +247,7 @@ EMAIL_PROVIDER=development
 FRONTEND_ORIGIN=http://localhost:3000
 ```
 
-Em `/minha-conta`, informe o e-mail usado na solicitação. O adaptador local escreve no log da API um link de desenvolvimento claramente identificado; ele não entrega uma mensagem real. `EMAIL_PROVIDER=development` é ignorado quando `APP_ENV=production`.
+Em `/minha-conta`, informe o e-mail usado na solicitação. O adaptador local não entrega mensagens e não registra o link ou token nos logs. Portanto, o login real exige um provedor transacional. `EMAIL_PROVIDER=development` é ignorado quando `APP_ENV=production`.
 
 Endpoints:
 
@@ -330,6 +331,12 @@ Aplique a migration 17 com `cd backend` e `go run ./cmd/migrate up`. Use Public 
 ## Proxy temporário do webhook
 
 Para uma validação externa autorizada, mantenha a API em `127.0.0.1:8080` e execute `go run ./cmd/webhook-proxy` no diretório `backend`. O proxy escuta em `:8090` e só encaminha `POST /api/v1/webhooks/mercado-pago`; todas as demais rotas ficam bloqueadas. Aponte o túnel HTTPS exclusivamente para a porta 8090. O procedimento e os testes de bloqueio estão em `docs/mercado-pago-webhook-proxy.md`. O projeto nunca abre o túnel automaticamente.
+
+## Perímetro administrativo Zero Trust
+
+O ambiente preparado separa o ingresso público (`127.0.0.1:8081`) do administrativo (`127.0.0.1:8082`). Com API e Next.js em execução, configure `ZERO_TRUST_LOCAL_TOKEN` com ao menos 24 caracteres e inicie `go run ./cmd/access-gateway` em `backend`. Em desenvolvimento, o token testa a segunda entrada local; ele é proibido em produção, onde o hostname administrativo deve estar integralmente protegido pelo Cloudflare Access.
+
+No deployment dividido, mantenha `API_URL=http://127.0.0.1:8080` para Server Components e deixe `NEXT_PUBLIC_API_URL` vazio para chamadas same-origin. O domínio público não encaminha `/admin*` nem `/api/v1/admin*`. O domínio administrativo não encaminha loja, cliente ou webhook. Consulte `docs/admin-zero-trust-architecture.md` e `docs/admin-zero-trust-deployment.md`; `infra/cloudflared/config.yml.example` é apenas referência e não contém credenciais nem inicia um Tunnel.
 
 ## Catálogos editoriais administráveis
 

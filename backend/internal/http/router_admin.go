@@ -61,6 +61,11 @@ func newHandler(frontendOrigin string, readiness handlers.ReadinessChecker, cata
 	if admin != nil {
 		router.HandleFunc("POST /api/v1/admin/session", admin.Login)
 		router.HandleFunc("DELETE /api/v1/admin/session", admin.Logout)
+		router.HandleFunc("GET /api/v1/admin/users", admin.ListInternalUsers)
+		router.HandleFunc("POST /api/v1/admin/users", admin.CreateInternalUser)
+		router.HandleFunc("PATCH /api/v1/admin/users/{id}", admin.UpdateInternalUser)
+		router.HandleFunc("PUT /api/v1/admin/users/{id}/password", admin.ResetInternalUserPassword)
+		router.HandleFunc("POST /api/v1/admin/users/{id}/sessions/revoke", admin.RevokeInternalUserSessions)
 		router.HandleFunc("GET /api/v1/admin/dashboard", admin.Stats)
 		router.HandleFunc("GET /api/v1/admin/quotes", admin.List)
 		router.HandleFunc("GET /api/v1/admin/quotes/{reference}", admin.Get)

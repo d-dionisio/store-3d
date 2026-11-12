@@ -8,6 +8,7 @@ import (
 	domain "example.com/loja-3d/backend/internal/domain/admin"
 	"fmt"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"time"
 )
@@ -47,6 +48,144 @@ func (r *AdminRepository) GetSession(ctx context.Context, tokenHash string) (dom
 func (r *AdminRepository) RevokeSession(ctx context.Context, id string) error {
 	_, err := r.pool.Exec(ctx, `UPDATE admin_sessions SET revoked_at=coalesce(revoked_at,now()) WHERE id=$1`, id)
 	return err
+}
+func (r *AdminRepository) ListInternalUsers(ctx context.Context) ([]domain.InternalUser, error) {
+	rows, err := r.pool.Query(ctx, `SELECT id,email,full_name,role,status,last_login_at,created_at,updated_at FROM admin_users ORDER BY full_name,email`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	users := []domain.InternalUser{}
+	for rows.Next() {
+		var user domain.InternalUser
+		if err = rows.Scan(&user.ID, &user.Email, &user.FullName, &user.Role, &user.Status, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt); err != nil {
+			return nil, err
+		}
+		users = append(users, user)
+	}
+	return users, rows.Err()
+}
+func (r *AdminRepository) CreateInternalUser(ctx context.Context, email, name, passwordHash, role, actorID string) (domain.InternalUser, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return domain.InternalUser{}, err
+	}
+	defer tx.Rollback(ctx)
+	var user domain.InternalUser
+	err = tx.QueryRow(ctx, `INSERT INTO admin_users(email,full_name,password_hash,role) VALUES($1,$2,$3,$4) RETURNING id,email,full_name,role,status,last_login_at,created_at,updated_at`, email, name, passwordHash, role).Scan(&user.ID, &user.Email, &user.FullName, &user.Role, &user.Status, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt)
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return user, app.ErrConflict
+	}
+	if err != nil {
+		return user, err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO admin_audit_events(admin_user_id,action,resource_type,resource_id,outcome,metadata) VALUES($1,'admin_user.create','admin_user',$2,'success',jsonb_build_object('role',$3::text))`, actorID, user.ID, role)
+	if err != nil {
+		return user, err
+	}
+	err = tx.Commit(ctx)
+	return user, err
+}
+func (r *AdminRepository) UpdateInternalUser(ctx context.Context, id, role, status, actorID string) (domain.InternalUser, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return domain.InternalUser{}, err
+	}
+	defer tx.Rollback(ctx)
+	var user domain.InternalUser
+	err = tx.QueryRow(ctx, `UPDATE admin_users SET role=$2,status=$3,updated_at=now() WHERE id=$1 RETURNING id,email,full_name,role,status,last_login_at,created_at,updated_at`, id, role, status).Scan(&user.ID, &user.Email, &user.FullName, &user.Role, &user.Status, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return user, app.ErrNotFound
+	}
+	if err != nil {
+		return user, err
+	}
+	if status != "active" {
+		if _, err = tx.Exec(ctx, `UPDATE admin_sessions SET revoked_at=coalesce(revoked_at,now()) WHERE admin_user_id=$1 AND revoked_at IS NULL`, id); err != nil {
+			return user, err
+		}
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO admin_audit_events(admin_user_id,action,resource_type,resource_id,outcome,metadata) VALUES($1,'admin_user.update','admin_user',$2,'success',jsonb_build_object('role',$3::text,'status',$4::text))`, actorID, id, role, status)
+	if err != nil {
+		return user, err
+	}
+	err = tx.Commit(ctx)
+	return user, err
+}
+func (r *AdminRepository) ResetInternalUserPassword(ctx context.Context, id, passwordHash, actorID string) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	result, err := tx.Exec(ctx, `UPDATE admin_users SET password_hash=$2,failed_login_attempts=0,locked_until=NULL,updated_at=now() WHERE id=$1`, id, passwordHash)
+	if err != nil {
+		return err
+	}
+	if result.RowsAffected() == 0 {
+		return app.ErrNotFound
+	}
+	if _, err = tx.Exec(ctx, `UPDATE admin_sessions SET revoked_at=coalesce(revoked_at,now()) WHERE admin_user_id=$1 AND revoked_at IS NULL`, id); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO admin_audit_events(admin_user_id,action,resource_type,resource_id,outcome) VALUES($1,'admin_user.password_reset','admin_user',$2,'success')`, actorID, id); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+func (r *AdminRepository) RevokeInternalUserSessions(ctx context.Context, id, actorID string) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	result, err := tx.Exec(ctx, `UPDATE admin_sessions SET revoked_at=coalesce(revoked_at,now()) WHERE admin_user_id=$1 AND revoked_at IS NULL`, id)
+	if err != nil {
+		return err
+	}
+	var exists bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM admin_users WHERE id=$1)`, id).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return app.ErrNotFound
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO admin_audit_events(admin_user_id,action,resource_type,resource_id,outcome,metadata) VALUES($1,'admin_user.sessions_revoke','admin_user',$2,'success',jsonb_build_object('revoked',$3::bigint))`, actorID, id, result.RowsAffected()); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// BootstrapAdmin is intentionally one-shot: the transaction-level advisory lock
+// prevents concurrent bootstraps and any existing internal user permanently closes it.
+func (r *AdminRepository) BootstrapAdmin(ctx context.Context, email, name, passwordHash string) (domain.InternalUser, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return domain.InternalUser{}, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(74100321)`); err != nil {
+		return domain.InternalUser{}, err
+	}
+	var count int
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM admin_users`).Scan(&count); err != nil {
+		return domain.InternalUser{}, err
+	}
+	if count != 0 {
+		return domain.InternalUser{}, app.ErrForbidden
+	}
+	var user domain.InternalUser
+	err = tx.QueryRow(ctx, `INSERT INTO admin_users(email,full_name,password_hash,role,status) VALUES($1,$2,$3,'admin','active') RETURNING id,email,full_name,role,status,last_login_at,created_at,updated_at`, email, name, passwordHash).Scan(&user.ID, &user.Email, &user.FullName, &user.Role, &user.Status, &user.LastLoginAt, &user.CreatedAt, &user.UpdatedAt)
+	if err != nil {
+		return user, err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO admin_audit_events(admin_user_id,action,resource_type,resource_id,outcome) VALUES($1::uuid,'admin.bootstrap','admin_user',$1::uuid::text,'success')`, user.ID)
+	if err != nil {
+		return user, err
+	}
+	err = tx.Commit(ctx)
+	return user, err
 }
 func (r *AdminRepository) Audit(ctx context.Context, userID, sessionID *string, action, resourceType, resourceID, outcome, ip string) error {
 	metadata, _ := json.Marshal(map[string]string{})

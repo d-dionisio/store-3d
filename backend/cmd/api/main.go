@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -29,6 +30,7 @@ import (
 
 func main() {
 	port := envOrDefault("HTTP_PORT", "8080")
+	host := envOrDefault("HTTP_HOST", "127.0.0.1")
 	frontendOrigin := envOrDefault("FRONTEND_ORIGIN", "http://localhost:3000")
 	databaseConfig, err := postgres.LoadConfig()
 	if err != nil {
@@ -123,7 +125,7 @@ func main() {
 	productionHandler := handlers.NewProductionHandler(productionService, adminService)
 
 	server := &http.Server{
-		Addr:              ":" + port,
+		Addr:              net.JoinHostPort(host, port),
 		Handler:           apihttp.NewHandlerCompleteWithProduction(frontendOrigin, databaseHealth, catalogHandler, quoteHandler, adminHandler, customerHandler, shippingHandler, paymentHandler, productionHandler, editorialHandler),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,

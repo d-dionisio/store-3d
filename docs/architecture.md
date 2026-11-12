@@ -115,13 +115,15 @@ Endpoints atuais:
 
 - O painel `/admin` usa identidade Dark Tech e é separado do layout público.
 - Administradores pertencem a `admin_users`, sem reutilizar tokens de upload ou confiar em flags do frontend.
-- Senhas usam bcrypt; criação/rotação ocorre somente pelo comando `cmd/admin` com variáveis de processo.
+- Senhas usam bcrypt. O primeiro administrador nasce por um bootstrap interativo, explicitamente habilitado e permanentemente bloqueado quando já existe qualquer usuário interno.
 - Sessões usam token aleatório de 256 bits, armazenado apenas como SHA-256, expiram em 8 horas e podem ser revogadas.
 - O cookie é HTTP-only, SameSite Strict e Secure quando `APP_ENV=production`.
 - Operações mutáveis exigem token CSRF vinculado à sessão; login possui rate limiting e bloqueio temporário após falhas.
 - `quote_viewer` e `admin` podem consultar orçamentos; não existem operações de aprovação ou preço nesta etapa.
 - Login, logout, dashboard, listagem e detalhe geram eventos em `admin_audit_events`.
 - Arquivos administrativos expõem apenas metadata; não há endpoint de download, chave de objeto ou URL assinada.
+- Gestão de usuários internos reutiliza a sessão administrativa e CSRF existentes. Somente `admin` cria contas, altera roles/status, redefine senhas ou revoga sessões; todas essas operações são auditadas.
+- O adaptador de e-mail de desenvolvimento nunca registra magic links, tokens ou dados pessoais. Acesso real de clientes permanece condicionado a um adaptador transacional configurado.
 
 ## Migrations
 
@@ -459,4 +461,13 @@ Ainda não foram implementados:
 - A hidratação ocorre somente no cliente e eventos `storage` sincronizam alterações entre abas. O reducer consolida variantes repetidas e limita quantidades ao mesmo máximo aceito pela API.
 - Adicionar um produto abre o drawer sem navegar. O painel funciona como dialog modal, contém foco, fecha por Escape/overlay, restaura o foco anterior, bloqueia a rolagem de fundo e anuncia mudanças relevantes por região viva.
 - O drawer usa apenas CSS e APIs nativas para transição e acessibilidade. `prefers-reduced-motion` elimina movimentos, enquanto o rodapé fixo respeita a safe area móvel.
+
+## Etapa 7.6 — isolamento administrativo Zero Trust
+
+- A aplicação preserva o monólito modular, mas passa a ter ingressos independentes: público (`127.0.0.1:8081`), administrativo (`127.0.0.1:8082`) e webhook (`127.0.0.1:8090`). API, Next.js e PostgreSQL não são origens públicas.
+- O gateway público usa allowlist de API e nega toda a árvore administrativa depois de decodificar e normalizar o caminho. O gateway admin faz o inverso e aceita somente `/admin*`, assets indispensáveis e `/api/v1/admin*`.
+- Cloudflare Access protege todo o hostname administrativo antes da sessão interna. Login, RBAC, CSRF e auditoria da aplicação continuam obrigatórios; nenhum header vindo do cliente concede autorização.
+- Cookies permanecem host-only e separados. Em produção, o navegador usa API same-origin através de cada gateway, evitando CORS entre superfícies; a allowlist CORS suporta origens exatas separadas para desenvolvimento.
+- O Next.js mantém uma validação por hostname como defesa em profundidade. O build ainda é compartilhado; separar os deployments Next é o hardening futuro recomendado caso também seja necessário isolar artefatos estáticos.
+- A referência de arquitetura, ameaças, revogação e implantação está em `docs/admin-zero-trust-architecture.md` e `docs/admin-zero-trust-deployment.md`. Nenhum túnel, DNS ou conta Cloudflare é criado automaticamente.
 

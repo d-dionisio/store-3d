@@ -8,12 +8,12 @@ import (
 
 type Development struct{}
 
-func (Development) SendMagicLink(_ context.Context, email, link string) error {
-	slog.Warn("development mail adapter: magic link was not delivered", "email", email, "template", MagicLinkTemplate(link))
+func (Development) SendMagicLink(_ context.Context, _, _ string) error {
+	slog.Warn("development mail adapter: magic link was not delivered; token intentionally omitted")
 	return nil
 }
-func (Development) SendDecision(_ context.Context, email, ref, decision string) error {
-	slog.Warn("development mail adapter: decision notification was not delivered", "email", email, "template", DecisionTemplate(ref, decision))
+func (Development) SendDecision(_ context.Context, _, _, _ string) error {
+	slog.Warn("development mail adapter: decision notification was not delivered; personal data omitted")
 	return nil
 }
 func MagicLinkTemplate(link string) string {

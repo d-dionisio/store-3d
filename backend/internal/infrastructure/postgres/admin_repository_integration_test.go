@@ -36,7 +36,7 @@ func TestBootstrapAdminOneShotIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _, _ = base.Exec(ctx, `DROP SCHEMA IF EXISTS `+identifier+` CASCADE`) })
-	_, err = base.Exec(ctx, `CREATE TABLE `+identifier+`.admin_users (id UUID PRIMARY KEY DEFAULT gen_random_uuid(),email TEXT NOT NULL,full_name TEXT NOT NULL,password_hash TEXT NOT NULL,role TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'active',last_login_at TIMESTAMPTZ,created_at TIMESTAMPTZ NOT NULL DEFAULT now(),updated_at TIMESTAMPTZ NOT NULL DEFAULT now()); CREATE TABLE `+identifier+`.admin_audit_events (id UUID PRIMARY KEY DEFAULT gen_random_uuid(),admin_user_id UUID,action TEXT NOT NULL,resource_type TEXT,resource_id TEXT,outcome TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT now())`)
+	_, err = base.Exec(ctx, `CREATE TABLE `+identifier+`.admin_users (id UUID PRIMARY KEY DEFAULT gen_random_uuid(),email TEXT NOT NULL,full_name TEXT NOT NULL,password_hash TEXT NOT NULL,role TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'active',failed_login_attempts INTEGER NOT NULL DEFAULT 0,locked_until TIMESTAMPTZ,last_login_at TIMESTAMPTZ,created_at TIMESTAMPTZ NOT NULL DEFAULT now(),updated_at TIMESTAMPTZ NOT NULL DEFAULT now()); CREATE TABLE `+identifier+`.admin_audit_events (id UUID PRIMARY KEY DEFAULT gen_random_uuid(),admin_user_id UUID,action TEXT NOT NULL,resource_type TEXT,resource_id TEXT,outcome TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT now())`)
 	if err != nil {
 		t.Fatal(err)
 	}

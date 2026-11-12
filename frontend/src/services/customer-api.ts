@@ -6,6 +6,17 @@ export type CustomerProposal={ID:string;Status:string;Version:number;FinalPriceC
 export type CustomerDetail=CustomerQuote&{Color:string;Notes:string;Proposals:CustomerProposal[]};
 export async function requestMagicLink(email:string){return call<{message:string}>("/magic-links",{method:"POST",body:JSON.stringify({email})})}
 export async function verifyMagicLink(token:string){return call<{csrf_token:string;user:{email:string;name:string}}>("/magic-links/verify",{method:"POST",body:JSON.stringify({token})})}
+export type AuthStep={action:"authenticated"|"mfa_required"|"mfa_setup_required";challenge_token?:string;csrf_token?:string;setup_uri?:string;setup_secret?:string;qr_code_data_url?:string;recovery_codes?:string[]};
+export async function registerCustomer(full_name:string,email:string,password:string){return call<{message:string}>("/register",{method:"POST",body:JSON.stringify({full_name,email,password})})}
+export async function passwordLogin(email:string,password:string){return call<AuthStep>("/session",{method:"POST",body:JSON.stringify({email,password})})}
+export async function completeCustomerMFA(challenge_token:string,code:string,recovery_code=""){return call<{csrf_token:string;recovery_codes:string[]}>("/session/mfa",{method:"POST",body:JSON.stringify({challenge_token,code,recovery_code})})}
+export async function verifyEmailToken(token:string){return call<void>("/email/verify",{method:"POST",body:JSON.stringify({token})})}
+export async function resendVerification(email:string){return call<{message:string}>("/email/resend",{method:"POST",body:JSON.stringify({email})})}
+export async function forgotPassword(email:string){return call<{message:string}>("/password/forgot",{method:"POST",body:JSON.stringify({email})})}
+export async function resetPassword(token:string,password:string){return call<void>("/password/reset",{method:"POST",body:JSON.stringify({token,password})})}
+export async function securityStatus(){return call<{mfa_enabled:boolean;recovery_codes_remaining:number;authentication_level:string}>("/security")}
+export async function beginMFA(){const csrf=sessionStorage.getItem("loja3d_customer_csrf")||"";return call<AuthStep>("/security/mfa",{method:"POST",headers:{"X-CSRF-Token":csrf}})}
+export async function disableMFA(){const csrf=sessionStorage.getItem("loja3d_customer_csrf")||"";return call<void>("/security/mfa",{method:"DELETE",headers:{"X-CSRF-Token":csrf}})}
 export async function profile(cookie?:string){return call<{ID:string;Email:string;FullName:string;Phone:string}>("/profile",{headers:cookie?{Cookie:cookie}:undefined})}
 export async function customerQuotes(cookie?:string){return call<CustomerQuote[]>("/quotes",{headers:cookie?{Cookie:cookie}:undefined})}
 export async function customerQuote(reference:string,cookie?:string){return call<CustomerDetail>(`/quotes/${encodeURIComponent(reference)}`,{headers:cookie?{Cookie:cookie}:undefined})}

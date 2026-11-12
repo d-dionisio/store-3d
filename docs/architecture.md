@@ -471,3 +471,13 @@ Ainda não foram implementados:
 - O Next.js mantém uma validação por hostname como defesa em profundidade. O build ainda é compartilhado; separar os deployments Next é o hardening futuro recomendado caso também seja necessário isolar artefatos estáticos.
 - A referência de arquitetura, ameaças, revogação e implantação está em `docs/admin-zero-trust-architecture.md` e `docs/admin-zero-trust-deployment.md`. Nenhum túnel, DNS ou conta Cloudflare é criado automaticamente.
 
+## Etapa 7.5.1 — senha e MFA
+
+- A identidade existente continua sendo a autoridade: contas administrativas não são duplicadas e clientes preservam o mesmo `users.id`, pedidos e orçamentos ao adotar senha.
+- Senhas novas de clientes usam Argon2id; hashes bcrypt existentes são aceitos e recifrados gradualmente após autenticação válida. A política é aplicada no backend.
+- MFA administrativo é obrigatório. A senha cria apenas um desafio de curta duração; a sessão com `authentication_level=mfa` nasce somente depois de TOTP ou recuperação válidos.
+- MFA do cliente é opcional. Magic links continuam disponíveis, mas não podem contornar um fator já habilitado.
+- TOTP usa período de 30 segundos e contador monotônico persistido. Segredos são cifrados por AES-256-GCM com chave externa versionada; códigos de recuperação são armazenados somente como hashes e consumidos em transação.
+- Tokens de verificação, redefinição e desafios são aleatórios, armazenados como hash, expiram e têm uso único. Redefinir senha ou desabilitar MFA revoga sessões.
+- A migration 23 revoga sessões administrativas anteriores à exigência de MFA e adiciona eventos de segurança. Detalhes operacionais e pendências estão em `docs/authentication-mfa.md`.
+

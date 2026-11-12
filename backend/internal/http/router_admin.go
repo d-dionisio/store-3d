@@ -60,6 +60,9 @@ func newHandler(frontendOrigin string, readiness handlers.ReadinessChecker, cata
 	}
 	if admin != nil {
 		router.HandleFunc("POST /api/v1/admin/session", admin.Login)
+		router.HandleFunc("POST /api/v1/admin/session/mfa", admin.CompleteIdentityMFA)
+		router.HandleFunc("GET /api/v1/admin/security", admin.SecurityStatus)
+		router.HandleFunc("POST /api/v1/admin/security/recovery-codes", admin.RegenerateRecoveryCodes)
 		router.HandleFunc("DELETE /api/v1/admin/session", admin.Logout)
 		router.HandleFunc("GET /api/v1/admin/users", admin.ListInternalUsers)
 		router.HandleFunc("POST /api/v1/admin/users", admin.CreateInternalUser)
@@ -75,6 +78,20 @@ func newHandler(frontendOrigin string, readiness handlers.ReadinessChecker, cata
 		router.HandleFunc("POST /api/v1/admin/quotes/expire", admin.Expire)
 	}
 	if customer != nil {
+		router.HandleFunc("POST /api/v1/customer/register", customer.Register)
+		router.HandleFunc("POST /api/v1/customer/session", customer.PasswordLogin)
+		router.HandleFunc("POST /api/v1/customer/session/mfa", customer.CompleteIdentityMFA)
+		router.HandleFunc("POST /api/v1/customer/email/verify", customer.VerifyEmail)
+		router.HandleFunc("POST /api/v1/customer/email/resend", customer.ResendVerification)
+		router.HandleFunc("POST /api/v1/customer/password/forgot", customer.RequestPasswordReset)
+		router.HandleFunc("POST /api/v1/customer/password/reset", customer.ResetPassword)
+		router.HandleFunc("PUT /api/v1/customer/password", customer.SetPassword)
+		router.HandleFunc("GET /api/v1/customer/security", customer.SecurityStatus)
+		router.HandleFunc("POST /api/v1/customer/security/mfa", customer.BeginMFA)
+		router.HandleFunc("POST /api/v1/customer/security/mfa/confirm", customer.CompleteIdentityMFA)
+		router.HandleFunc("DELETE /api/v1/customer/security/mfa", customer.DisableMFA)
+		router.HandleFunc("POST /api/v1/customer/security/recovery-codes", customer.RegenerateRecoveryCodes)
+		router.HandleFunc("POST /api/v1/customer/sessions/revoke", customer.RevokeAllSessions)
 		router.HandleFunc("POST /api/v1/customer/magic-links", customer.RequestLink)
 		router.HandleFunc("POST /api/v1/customer/magic-links/verify", customer.Verify)
 		router.HandleFunc("DELETE /api/v1/customer/session", customer.Logout)

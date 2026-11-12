@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	catalogapp "example.com/loja-3d/backend/internal/application/catalog"
 	customerapp "example.com/loja-3d/backend/internal/application/customer"
 	editorialapp "example.com/loja-3d/backend/internal/application/editorial"
+	identityapp "example.com/loja-3d/backend/internal/application/identity"
 	paymentapp "example.com/loja-3d/backend/internal/application/payment"
 	productionapp "example.com/loja-3d/backend/internal/application/production"
 	quoteapp "example.com/loja-3d/backend/internal/application/quote"
@@ -26,6 +28,7 @@ import (
 	"example.com/loja-3d/backend/internal/infrastructure/postgres"
 	melhorenvio "example.com/loja-3d/backend/internal/infrastructure/shipping/melhorenvio"
 	"example.com/loja-3d/backend/internal/infrastructure/storage"
+	securityauth "example.com/loja-3d/backend/internal/security/auth"
 )
 
 func main() {
@@ -65,17 +68,36 @@ func main() {
 	quoteHandler := handlers.NewQuoteHandler(quoteapp.New(quoteRepository, quoteStorage, bucket))
 	adminRepository := postgres.NewAdminRepository(pool)
 	adminService := adminapp.New(adminRepository)
-	adminHandler := handlers.NewAdminHandler(adminService, envOrDefault("APP_ENV", "development") == "production")
-	editorialService := editorialapp.New(postgres.NewEditorialRepository(pool), catalogRepository)
-	editorialHandler := handlers.NewEditorialHandler(editorialService, adminService)
 	appEnv := envOrDefault("APP_ENV", "development")
+	var identityMailer identityapp.Mailer = mail.Unavailable{}
 	var customerMailer customerapp.Mailer = mail.Unavailable{}
 	if appEnv == "development" && envOrDefault("EMAIL_PROVIDER", "disabled") == "development" {
-		customerMailer = mail.Development{}
+		developmentMailer := mail.Development{}
+		customerMailer = developmentMailer
+		identityMailer = developmentMailer
 	}
+	var identityService *identityapp.Service
+	mfaVersionValue, versionErr := strconv.ParseInt(envOrDefault("AUTH_MFA_KEY_VERSION", "1"), 10, 16)
+	if versionErr != nil || mfaVersionValue < 1 {
+		slog.Error("invalid MFA key version")
+		os.Exit(1)
+	}
+	mfaKeyVersion := int16(mfaVersionValue)
+	mfaCipher, cipherErr := securityauth.NewCipher(os.Getenv("AUTH_MFA_ENCRYPTION_KEY"), mfaKeyVersion)
+	if cipherErr == nil {
+		identityService = identityapp.New(postgres.NewIdentityRepository(pool), identityMailer, mfaCipher, envOrDefault("SITE_URL", "http://localhost:3000"))
+	} else if appEnv == "production" {
+		slog.Error("MFA encryption configuration is required in production")
+		os.Exit(1)
+	} else {
+		slog.Warn("MFA encryption is not configured; password and administrative login endpoints fail closed")
+	}
+	adminHandler := handlers.NewAdminHandler(adminService, appEnv == "production", identityService)
+	editorialService := editorialapp.New(postgres.NewEditorialRepository(pool), catalogRepository)
+	editorialHandler := handlers.NewEditorialHandler(editorialService, adminService)
 	customerRepository := postgres.NewCustomerRepository(pool)
 	customerService := customerapp.New(customerRepository, customerMailer, envOrDefault("FRONTEND_ORIGIN", "http://localhost:3000"))
-	customerHandler := handlers.NewCustomerHandler(customerService, appEnv == "production")
+	customerHandler := handlers.NewCustomerHandler(customerService, appEnv == "production", identityService)
 	shippingRepository := postgres.NewShippingRepository(pool)
 	var shippingProvider shippingapp.Provider = melhorenvio.Unavailable{}
 	shippingTimeout, parseErr := time.ParseDuration(envOrDefault("MELHOR_ENVIO_TIMEOUT", "8s"))

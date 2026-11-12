@@ -17,8 +17,8 @@ type InternalUser struct {
 	UpdatedAt   time.Time  `json:"updated_at"`
 }
 type Session struct {
-	ID, UserID, Email, FullName, Role, CSRFHash string
-	ExpiresAt                                   time.Time
+	ID, UserID, Email, FullName, Role, CSRFHash, AuthenticationLevel string
+	ExpiresAt                                                        time.Time
 }
 type Stats struct{ Total, Waiting, Reviewing, Quoted, Approved, Rejected int64 }
 type QuoteSummary struct {

@@ -47,6 +47,13 @@ func (r *CustomerRepository) ConsumeMagicLink(ctx context.Context, hash, session
 	if e != nil {
 		return domain.Session{}, e
 	}
+	var mfaEnabled bool
+	if e = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM auth_mfa_factors WHERE user_id=$1 AND enabled_at IS NOT NULL)`, userID).Scan(&mfaEnabled); e != nil {
+		return domain.Session{}, e
+	}
+	if mfaEnabled {
+		return domain.Session{}, app.ErrUnauthorized
+	}
 	if _, e = tx.Exec(ctx, `UPDATE quotes SET user_id=$1,updated_at=now() WHERE user_id IS NULL AND lower(customer_email)=lower($2)`, userID, email); e != nil {
 		return domain.Session{}, e
 	}
@@ -67,7 +74,7 @@ func (r *CustomerRepository) ConsumeMagicLink(ctx context.Context, hash, session
 }
 func (r *CustomerRepository) GetSession(ctx context.Context, hash string) (domain.Session, error) {
 	var s domain.Session
-	e := r.pool.QueryRow(ctx, `SELECT s.id,s.user_id,u.email,u.full_name,s.csrf_token_hash,s.expires_at FROM customer_sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.status='active' AND u.email_verified_at IS NOT NULL`, hash).Scan(&s.ID, &s.UserID, &s.Email, &s.FullName, &s.CSRFHash, &s.ExpiresAt)
+	e := r.pool.QueryRow(ctx, `SELECT s.id,s.user_id,u.email,u.full_name,s.csrf_token_hash,s.authentication_level,s.expires_at FROM customer_sessions s JOIN users u ON u.id=s.user_id LEFT JOIN auth_mfa_factors f ON f.user_id=u.id AND f.enabled_at IS NOT NULL WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.status='active' AND u.email_verified_at IS NOT NULL AND (f.id IS NULL OR s.authentication_level='mfa')`, hash).Scan(&s.ID, &s.UserID, &s.Email, &s.FullName, &s.CSRFHash, &s.AuthenticationLevel, &s.ExpiresAt)
 	if errors.Is(e, pgx.ErrNoRows) {
 		e = app.ErrUnauthorized
 	}

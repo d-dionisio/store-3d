@@ -1,1 +1,1 @@
-import{MagicLinkForm}from"@/components/account/magic-link-form";export default function AccountPage(){return <main className="bg-stone-50 px-6 py-24"><MagicLinkForm/></main>}
+import Link from "next/link";import{MagicLinkForm}from"@/components/account/magic-link-form";export default function AccountPage(){return <main className="bg-stone-50 px-6 py-24"><div className="mx-auto mb-8 flex max-w-md justify-between text-sm"><Link href="/login">Entrar com senha</Link><Link href="/minha-conta/seguranca">Segurança da conta</Link></div><MagicLinkForm/></main>}

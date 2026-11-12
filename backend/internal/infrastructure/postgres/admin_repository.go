@@ -36,7 +36,7 @@ func (r *AdminRepository) CreateSession(ctx context.Context, userID, tokenHash, 
 }
 func (r *AdminRepository) GetSession(ctx context.Context, tokenHash string) (domain.Session, error) {
 	var s domain.Session
-	err := r.pool.QueryRow(ctx, `SELECT s.id,s.admin_user_id,u.email,u.full_name,u.role,s.csrf_token_hash,s.expires_at FROM admin_sessions s JOIN admin_users u ON u.id=s.admin_user_id WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND u.status='active'`, tokenHash).Scan(&s.ID, &s.UserID, &s.Email, &s.FullName, &s.Role, &s.CSRFHash, &s.ExpiresAt)
+	err := r.pool.QueryRow(ctx, `SELECT s.id,s.admin_user_id,u.email,u.full_name,u.role,s.csrf_token_hash,s.authentication_level,s.expires_at FROM admin_sessions s JOIN admin_users u ON u.id=s.admin_user_id WHERE s.token_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>now() AND s.authentication_level='mfa' AND u.status='active'`, tokenHash).Scan(&s.ID, &s.UserID, &s.Email, &s.FullName, &s.Role, &s.CSRFHash, &s.AuthenticationLevel, &s.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return s, app.ErrUnauthorized
 	}

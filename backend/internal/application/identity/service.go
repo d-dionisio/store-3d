@@ -1,0 +1,374 @@
+package identity
+
+import (
+	"context"
+	"errors"
+	"net/mail"
+	"strings"
+	"time"
+
+	security "example.com/loja-3d/backend/internal/security/auth"
+)
+
+var ErrUnauthorized = errors.New("unauthorized")
+var ErrInvalid = errors.New("invalid")
+var ErrConflict = errors.New("conflict")
+var ErrExpired = errors.New("expired")
+var ErrRateLimited = errors.New("rate limited")
+var ErrUnavailable = errors.New("unavailable")
+
+type Identity struct {
+	ID, Kind, Email, FullName, Role, Status, PasswordHash string
+	EmailVerified                                         bool
+	LockedUntil                                           *time.Time
+}
+type Factor struct {
+	ID, IdentityID, Kind string
+	Ciphertext           []byte
+	KeyVersion           int16
+	Enabled              bool
+	LastCounter          *int64
+}
+type Challenge struct {
+	ID, IdentityID, Kind, Purpose string
+	Attempts                      int
+	ExpiresAt                     time.Time
+	Consumed                      bool
+}
+type Session struct {
+	ID, IdentityID, Kind, Email, FullName, Role, CSRFHash string
+	ExpiresAt                                             time.Time
+}
+type LoginResult struct {
+	ChallengeToken, Action, SetupURI, SetupSecret, SessionToken, CSRFToken string
+	Session                                                                *Session
+}
+type CompleteResult struct {
+	Session                 Session
+	SessionToken, CSRFToken string
+	RecoveryCodes           []string
+}
+
+type Repository interface {
+	FindIdentity(context.Context, string, string) (Identity, error)
+	RegisterCustomer(context.Context, string, string, string, string, time.Time) (Identity, error)
+	CreateCustomerToken(context.Context, string, string, string, time.Time) error
+	ConsumeEmailVerification(context.Context, string) error
+	ResetPassword(context.Context, string, string) error
+	UpdatePassword(context.Context, string, string, string) error
+	RecordFailure(context.Context, string, string, string) error
+	UpsertPendingFactor(context.Context, string, string, []byte, int16) (Factor, error)
+	GetFactor(context.Context, string, string) (Factor, error)
+	CreateChallenge(context.Context, string, string, string, string, string, string, time.Time) error
+	GetChallenge(context.Context, string) (Challenge, error)
+	EnableFactorAndSession(context.Context, string, string, int64, []string, string, string, string, string, time.Time) (Session, error)
+	CompleteMFAAndSession(context.Context, string, *int64, string, string, string, string, string, time.Time) (Session, error)
+	CreateSession(context.Context, string, string, string, string, string, string, time.Time) (Session, error)
+	MFAStatus(context.Context, string, string) (bool, int, error)
+	DisableMFA(context.Context, string, string) error
+	RevokeSessions(context.Context, string, string) error
+	RegenerateRecoveryCodes(context.Context, string, string, []string) error
+	SecurityEvent(context.Context, string, *string, string, string, string) error
+}
+type Mailer interface {
+	SendVerification(context.Context, string, string) error
+	SendPasswordReset(context.Context, string, string) error
+}
+type Service struct {
+	repo      Repository
+	mailer    Mailer
+	cipher    *security.Cipher
+	publicURL string
+	now       func() time.Time
+}
+
+func New(repo Repository, mailer Mailer, cipher *security.Cipher, publicURL string) *Service {
+	return &Service{repo: repo, mailer: mailer, cipher: cipher, publicURL: strings.TrimRight(publicURL, "/"), now: time.Now}
+}
+
+func normalizeEmail(value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	parsed, e := mail.ParseAddress(value)
+	if e != nil || parsed.Address != value || len(value) > 254 {
+		return "", ErrInvalid
+	}
+	return value, nil
+}
+func (s *Service) Register(ctx context.Context, name, email, password, ip string) error {
+	name = strings.TrimSpace(name)
+	email, e := normalizeEmail(email)
+	if e != nil || name == "" || len([]rune(name)) > 150 || security.ValidatePassword(password) != nil {
+		return ErrInvalid
+	}
+	hash, e := security.HashPassword(password)
+	if e != nil {
+		return e
+	}
+	raw, tokenHash, e := security.Token()
+	if e != nil {
+		return e
+	}
+	identity, e := s.repo.RegisterCustomer(ctx, name, email, hash, tokenHash, s.now().Add(30*time.Minute))
+	if e != nil {
+		return e
+	}
+	_ = s.repo.SecurityEvent(ctx, "customer", &identity.ID, "customer.register", "success", ip)
+	if e = s.mailer.SendVerification(ctx, email, s.publicURL+"/verificar-email?token="+raw); e != nil {
+		return ErrUnavailable
+	}
+	return nil
+}
+func (s *Service) VerifyEmail(ctx context.Context, raw, ip string) error {
+	if len(raw) < 32 {
+		return ErrInvalid
+	}
+	e := s.repo.ConsumeEmailVerification(ctx, security.TokenHash(raw))
+	outcome := "success"
+	if e != nil {
+		outcome = "denied"
+	}
+	_ = s.repo.SecurityEvent(ctx, "anonymous", nil, "customer.email.verify", outcome, ip)
+	return e
+}
+func (s *Service) ResendVerification(ctx context.Context, email, ip string) error {
+	email, e := normalizeEmail(email)
+	if e != nil {
+		return nil
+	}
+	identity, e := s.repo.FindIdentity(ctx, "customer", email)
+	if e != nil || identity.EmailVerified {
+		return nil
+	}
+	raw, hash, e := security.Token()
+	if e != nil {
+		return e
+	}
+	if e = s.repo.CreateCustomerToken(ctx, identity.ID, "verify_email", hash, s.now().Add(30*time.Minute)); e != nil {
+		return e
+	}
+	if e = s.mailer.SendVerification(ctx, email, s.publicURL+"/verificar-email?token="+raw); e != nil {
+		return ErrUnavailable
+	}
+	return nil
+}
+func (s *Service) RequestReset(ctx context.Context, email, ip string) error {
+	email, e := normalizeEmail(email)
+	if e != nil {
+		return nil
+	}
+	identity, e := s.repo.FindIdentity(ctx, "customer", email)
+	if e != nil || !identity.EmailVerified || identity.PasswordHash == "" {
+		return nil
+	}
+	raw, hash, e := security.Token()
+	if e != nil {
+		return e
+	}
+	if e = s.repo.CreateCustomerToken(ctx, identity.ID, "reset_password", hash, s.now().Add(20*time.Minute)); e != nil {
+		return e
+	}
+	if e = s.mailer.SendPasswordReset(ctx, email, s.publicURL+"/redefinir-senha?token="+raw); e != nil {
+		return ErrUnavailable
+	}
+	return nil
+}
+func (s *Service) ResetPassword(ctx context.Context, raw, password, ip string) error {
+	if security.ValidatePassword(password) != nil || len(raw) < 32 {
+		return ErrInvalid
+	}
+	hash, e := security.HashPassword(password)
+	if e != nil {
+		return e
+	}
+	e = s.repo.ResetPassword(ctx, security.TokenHash(raw), hash)
+	outcome := "success"
+	if e != nil {
+		outcome = "denied"
+	}
+	_ = s.repo.SecurityEvent(ctx, "anonymous", nil, "customer.password.reset", outcome, ip)
+	return e
+}
+
+func (s *Service) StartLogin(ctx context.Context, kind, email, password, ip, ua string) (LoginResult, error) {
+	email, e := normalizeEmail(email)
+	if e != nil {
+		return LoginResult{}, ErrUnauthorized
+	}
+	identity, e := s.repo.FindIdentity(ctx, kind, email)
+	valid := e == nil && identity.Status == "active" && (identity.LockedUntil == nil || identity.LockedUntil.Before(s.now()))
+	passwordOK, needsRehash := security.VerifyPassword(identity.PasswordHash, password)
+	if !passwordOK {
+		valid = false
+	}
+	if kind == "customer" && !identity.EmailVerified {
+		valid = false
+	}
+	if !valid {
+		_ = s.repo.RecordFailure(ctx, kind, email, ip)
+		return LoginResult{}, ErrUnauthorized
+	}
+	if needsRehash {
+		if upgraded, hashErr := security.HashPassword(password); hashErr == nil {
+			_ = s.repo.UpdatePassword(ctx, kind, identity.ID, upgraded)
+		}
+	}
+	factor, e := s.repo.GetFactor(ctx, kind, identity.ID)
+	if e != nil || !factor.Enabled {
+		if kind == "customer" {
+			return s.passwordSession(ctx, identity, ip, ua)
+		}
+		secret, e := security.NewTOTPSecret()
+		if e != nil {
+			return LoginResult{}, e
+		}
+		encrypted, e := s.cipher.Encrypt([]byte(secret))
+		if e != nil {
+			return LoginResult{}, e
+		}
+		if _, e = s.repo.UpsertPendingFactor(ctx, kind, identity.ID, encrypted, s.cipher.Version); e != nil {
+			return LoginResult{}, e
+		}
+		raw, hash, e := security.Token()
+		if e != nil {
+			return LoginResult{}, e
+		}
+		if e = s.repo.CreateChallenge(ctx, kind, identity.ID, "admin_mfa_setup", hash, ip, ua, s.now().Add(10*time.Minute)); e != nil {
+			return LoginResult{}, e
+		}
+		return LoginResult{ChallengeToken: raw, Action: "mfa_setup_required", SetupSecret: secret, SetupURI: security.TOTPUri("Loja 3D Admin", identity.Email, secret)}, nil
+	}
+	raw, hash, e := security.Token()
+	if e != nil {
+		return LoginResult{}, e
+	}
+	purpose := kind + "_mfa_login"
+	if e = s.repo.CreateChallenge(ctx, kind, identity.ID, purpose, hash, ip, ua, s.now().Add(5*time.Minute)); e != nil {
+		return LoginResult{}, e
+	}
+	return LoginResult{ChallengeToken: raw, Action: "mfa_required"}, nil
+}
+func (s *Service) passwordSession(ctx context.Context, identity Identity, ip, ua string) (LoginResult, error) {
+	sessionRaw, sessionHash, e := security.Token()
+	if e != nil {
+		return LoginResult{}, e
+	}
+	csrfRaw, csrfHash, e := security.Token()
+	if e != nil {
+		return LoginResult{}, e
+	}
+	session, e := s.repo.CreateSession(ctx, identity.Kind, identity.ID, sessionHash, csrfHash, ip, ua, s.now().Add(30*24*time.Hour))
+	if e != nil {
+		return LoginResult{}, e
+	}
+	return LoginResult{Action: "authenticated", SessionToken: sessionRaw, CSRFToken: csrfRaw, Session: &session}, nil
+}
+func (s *Service) CompleteMFA(ctx context.Context, raw, code, recovery, ip, ua string) (CompleteResult, error) {
+	challenge, e := s.repo.GetChallenge(ctx, security.TokenHash(raw))
+	if e != nil || challenge.Consumed || challenge.ExpiresAt.Before(s.now()) || challenge.Attempts >= 10 {
+		return CompleteResult{}, ErrUnauthorized
+	}
+	factor, e := s.repo.GetFactor(ctx, challenge.Kind, challenge.IdentityID)
+	if e != nil {
+		return CompleteResult{}, ErrUnauthorized
+	}
+	secretBytes, e := s.cipher.Decrypt(factor.Ciphertext, factor.KeyVersion)
+	if e != nil {
+		return CompleteResult{}, ErrUnauthorized
+	}
+	var counter *int64
+	if recovery == "" {
+		value, ok := security.ValidateTOTP(string(secretBytes), code, s.now(), factor.LastCounter)
+		if !ok {
+			return CompleteResult{}, ErrUnauthorized
+		}
+		counter = &value
+	}
+	sessionRaw, sessionHash, e := security.Token()
+	if e != nil {
+		return CompleteResult{}, e
+	}
+	csrfRaw, csrfHash, e := security.Token()
+	if e != nil {
+		return CompleteResult{}, e
+	}
+	expires := s.now().Add(8 * time.Hour)
+	if challenge.Kind == "customer" {
+		expires = s.now().Add(30 * 24 * time.Hour)
+	}
+	var session Session
+	var codes []string
+	if strings.HasSuffix(challenge.Purpose, "mfa_setup") {
+		if counter == nil {
+			return CompleteResult{}, ErrInvalid
+		}
+		var hashes []string
+		codes, hashes, e = security.RecoveryCodes(10)
+		if e != nil {
+			return CompleteResult{}, e
+		}
+		session, e = s.repo.EnableFactorAndSession(ctx, security.TokenHash(raw), factor.ID, *counter, hashes, sessionHash, csrfHash, ip, ua, expires)
+	} else {
+		recoveryHash := ""
+		if recovery != "" {
+			recoveryHash = security.TokenHash(strings.ToUpper(strings.TrimSpace(recovery)))
+		}
+		session, e = s.repo.CompleteMFAAndSession(ctx, security.TokenHash(raw), counter, recoveryHash, sessionHash, csrfHash, ip, ua, expires)
+	}
+	if e != nil {
+		return CompleteResult{}, ErrUnauthorized
+	}
+	return CompleteResult{Session: session, SessionToken: sessionRaw, CSRFToken: csrfRaw, RecoveryCodes: codes}, nil
+}
+func (s *Service) Status(ctx context.Context, kind, id string) (bool, int, error) {
+	return s.repo.MFAStatus(ctx, kind, id)
+}
+func (s *Service) BeginSetup(ctx context.Context, kind, id, email, ip, ua string) (LoginResult, error) {
+	secret, e := security.NewTOTPSecret()
+	if e != nil {
+		return LoginResult{}, e
+	}
+	encrypted, e := s.cipher.Encrypt([]byte(secret))
+	if e != nil {
+		return LoginResult{}, e
+	}
+	if _, e = s.repo.UpsertPendingFactor(ctx, kind, id, encrypted, s.cipher.Version); e != nil {
+		return LoginResult{}, e
+	}
+	raw, hash, e := security.Token()
+	if e != nil {
+		return LoginResult{}, e
+	}
+	if e = s.repo.CreateChallenge(ctx, kind, id, kind+"_mfa_setup", hash, ip, ua, s.now().Add(10*time.Minute)); e != nil {
+		return LoginResult{}, e
+	}
+	return LoginResult{Action: "mfa_setup_required", ChallengeToken: raw, SetupSecret: secret, SetupURI: security.TOTPUri("Loja 3D", email, secret)}, nil
+}
+func (s *Service) Disable(ctx context.Context, kind, id string) error {
+	if kind == "admin" {
+		return ErrInvalid
+	}
+	return s.repo.DisableMFA(ctx, kind, id)
+}
+func (s *Service) RevokeSessions(ctx context.Context, kind, id string) error {
+	return s.repo.RevokeSessions(ctx, kind, id)
+}
+func (s *Service) SetPassword(ctx context.Context, kind, id, password string) error {
+	if security.ValidatePassword(password) != nil {
+		return ErrInvalid
+	}
+	hash, e := security.HashPassword(password)
+	if e != nil {
+		return e
+	}
+	return s.repo.UpdatePassword(ctx, kind, id, hash)
+}
+func (s *Service) RegenerateRecoveryCodes(ctx context.Context, kind, id string) ([]string, error) {
+	raw, hashes, e := security.RecoveryCodes(10)
+	if e != nil {
+		return nil, e
+	}
+	if e = s.repo.RegenerateRecoveryCodes(ctx, kind, id, hashes); e != nil {
+		return nil, e
+	}
+	return raw, nil
+}

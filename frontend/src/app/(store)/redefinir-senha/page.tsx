@@ -1,0 +1,1 @@
+import {Suspense} from "react";import {CustomerAuthForm} from "@/components/account/customer-auth-form";export default function Page(){return <main className="auth-page"><Suspense><CustomerAuthForm mode="reset"/></Suspense></main>}

@@ -3,8 +3,8 @@ package customer
 import "time"
 
 type Session struct {
-	ID, UserID, Email, FullName, CSRFHash string
-	ExpiresAt                             time.Time
+	ID, UserID, Email, FullName, CSRFHash, AuthenticationLevel string
+	ExpiresAt                                                  time.Time
 }
 type Profile struct{ ID, Email, FullName, Phone string }
 type QuoteSummary struct {

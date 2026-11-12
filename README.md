@@ -182,10 +182,10 @@ go test ./...
 go vet ./...
 ```
 
-O teste de integração do pool é habilitado somente quando `TEST_DATABASE_URL` estiver definido:
+Os testes PostgreSQL são habilitados somente quando `TEST_DATABASE_URL` estiver definido. Use um banco descartável, já migrado, cujo nome termine em `_test`; nunca reutilize o `DATABASE_URL` de desenvolvimento:
 
 ```powershell
-$env:TEST_DATABASE_URL = "postgres://loja_3d:change_me_for_local_development@localhost:5432/loja_3d?sslmode=disable"
+$env:TEST_DATABASE_URL = "postgres://loja_3d:change_me_for_local_development@localhost:5432/loja_3d_test?sslmode=disable"
 go test ./internal/infrastructure/postgres -run TestNewPoolIntegration -v
 ```
 
@@ -237,7 +237,13 @@ Endpoints protegidos:
 
 As requisições mutáveis exigem o cookie de sessão e `X-CSRF-Token`. A migration `000011_create_quote_proposals` é aplicada com o comando independente já documentado. E-mail ainda não é enviado: a proposta fica registrada como `not_configured` até a configuração de um provedor.
 
-## Área do cliente e magic link
+## Área do cliente, senha e MFA
+
+Aplique a migration 23 antes de habilitar os novos fluxos. Configure `AUTH_MFA_ENCRYPTION_KEY` com exatamente 32 bytes aleatórios em Base64 e mantenha a chave fora do Git. `AUTH_MFA_KEY_VERSION` começa em `1`. Sem uma chave válida, autenticação por senha/MFA falha fechada; em produção a API não inicia.
+
+Administradores entram em `/admin/login` com senha e obrigatoriamente concluem TOTP. No primeiro acesso, a tela apresenta o QR e entrega os códigos de recuperação uma única vez. Clientes podem usar `/cadastro`, `/login`, `/esqueci-minha-senha`, `/redefinir-senha`, `/verificar-email` e `/minha-conta/seguranca`.
+
+O magic link existente permanece disponível para clientes sem MFA. O adaptador de e-mail de desenvolvimento não entrega mensagens nem imprime tokens: cadastro, verificação e recuperação reais exigem um provedor transacional configurado. Consulte `docs/authentication-mfa.md` para política, endpoints, rotação de chave e pendências operacionais.
 
 Configure o adaptador local somente durante desenvolvimento:
 

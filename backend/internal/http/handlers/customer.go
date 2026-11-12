@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	app "example.com/loja-3d/backend/internal/application/customer"
+	identityapp "example.com/loja-3d/backend/internal/application/identity"
 	domain "example.com/loja-3d/backend/internal/domain/customer"
 	"log/slog"
 	"net/http"
@@ -11,13 +12,18 @@ import (
 )
 
 type CustomerHandler struct {
-	service *app.Service
-	secure  bool
-	limiter *ipLimiter
+	service  *app.Service
+	secure   bool
+	limiter  *ipLimiter
+	identity *identityapp.Service
 }
 
-func NewCustomerHandler(s *app.Service, secure bool) *CustomerHandler {
-	return &CustomerHandler{s, secure, newIPLimiter(10, time.Minute)}
+func NewCustomerHandler(s *app.Service, secure bool, identity ...*identityapp.Service) *CustomerHandler {
+	h := &CustomerHandler{service: s, secure: secure, limiter: newIPLimiter(10, time.Minute)}
+	if len(identity) > 0 {
+		h.identity = identity[0]
+	}
+	return h
 }
 func customerError(w http.ResponseWriter, e error) {
 	switch {

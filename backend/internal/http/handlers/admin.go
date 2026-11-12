@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	app "example.com/loja-3d/backend/internal/application/admin"
+	identityapp "example.com/loja-3d/backend/internal/application/identity"
 	domain "example.com/loja-3d/backend/internal/domain/admin"
 	"net"
 	"net/http"
@@ -13,13 +14,20 @@ import (
 )
 
 type AdminHandler struct {
-	service       *app.Service
-	secureCookies bool
-	limiter       *ipLimiter
+	service          *app.Service
+	secureCookies    bool
+	limiter          *ipLimiter
+	identity         *identityapp.Service
+	identityRequired bool
 }
 
-func NewAdminHandler(service *app.Service, secure bool) *AdminHandler {
-	return &AdminHandler{service: service, secureCookies: secure, limiter: newIPLimiter(10, time.Minute)}
+func NewAdminHandler(service *app.Service, secure bool, identity ...*identityapp.Service) *AdminHandler {
+	h := &AdminHandler{service: service, secureCookies: secure, limiter: newIPLimiter(10, time.Minute)}
+	if len(identity) > 0 {
+		h.identityRequired = true
+		h.identity = identity[0]
+	}
+	return h
 }
 func adminIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -63,6 +71,10 @@ func (h *AdminHandler) mutationSession(r *http.Request) (domain.Session, error) 
 	return session, err
 }
 func (h *AdminHandler) Login(w http.ResponseWriter, r *http.Request) {
+	if h.identityRequired {
+		h.identityLogin(w, r)
+		return
+	}
 	if !h.limiter.Allow(adminIP(r)) {
 		writeQuoteJSON(w, 429, map[string]any{"error": map[string]string{"code": "rate_limited", "message": "Muitas tentativas."}})
 		return

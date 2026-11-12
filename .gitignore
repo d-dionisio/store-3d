@@ -16,6 +16,7 @@ backend/bin/
 backend/coverage.out
 backend/*.test
 .cache/
+backups/
 
 # Editors, operating systems, and temporary files
 .idea/

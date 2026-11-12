@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,8 +21,22 @@ func TestProductionIntegrityIntegration(t *testing.T) {
 	if url == "" {
 		t.Skip("TEST_DATABASE_URL is required")
 	}
+	poolConfig, err := pgxpool.ParseConfig(url)
+	if err != nil {
+		t.Fatal("invalid TEST_DATABASE_URL")
+	}
+	// This test deliberately exercises immutable audit records and concurrent
+	// row locks. Never let it write its full commercial graph to a development
+	// database; provision and dispose a dedicated *_test database instead.
+	if !strings.HasSuffix(strings.ToLower(poolConfig.ConnConfig.Database), "_test") {
+		t.Fatalf("TEST_DATABASE_URL must point to a dedicated database whose name ends in _test; got %q", poolConfig.ConnConfig.Database)
+	}
+	if developmentURL := strings.TrimSpace(os.Getenv("DATABASE_URL")); developmentURL != "" && developmentURL == strings.TrimSpace(url) {
+		t.Fatal("TEST_DATABASE_URL must not equal DATABASE_URL")
+	}
+
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, url)
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		t.Fatal(err)
 	}

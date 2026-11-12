@@ -377,3 +377,9 @@ API administrativa:
 
 Somente catálogos publicados e com produtos atualmente comercializáveis aparecem em `/catalogo`. Preço, estoque e dados do produto nunca são copiados para as tabelas editoriais.
 
+## Painel de produção
+
+Com as migrations 19 a 22 aplicadas, a API e o frontend em execução e uma sessão administrativa com MFA válida, acesse `/admin/producao`. As páginas de impressoras e materiais ficam em `/admin/producao/impressoras` e `/admin/producao/materiais`.
+
+As ações usam os endpoints administrativos existentes, exigem CSRF e respeitam o RBAC do backend: `admin` e `production_manager` gerenciam recursos e todo o fluxo; `production_operator` executa somente as operações autorizadas. Consulte `docs/production-api.md` para contratos e limitações atuais dos DTOs.
+

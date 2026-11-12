@@ -454,6 +454,14 @@ Ainda não foram implementados:
 - `admin` e `production_manager` administram recursos, fila, conclusão, cancelamento, qualidade e reimpressões. `production_operator` executa trabalhos, registra falhas, consumo e inspeções. `quote_viewer` não acessa produção.
 - Toda mutação HTTP exige sessão administrativa e CSRF. Operações administrativas geram `admin_audit_events`; transições e atividades produtivas também preservam `production_events`.
 
+## Etapa 10.4 — painel administrativo de produção
+
+- O frontend de produção consome exclusivamente a API administrativa criada na Etapa 10.3. Não mantém estado produtivo paralelo e não altera jobs localmente antes da confirmação do backend.
+- Server Components carregam fila, impressoras e bobinas com o cookie administrativo. Client Components ficam restritos a filtros e ações interativas; mutações reutilizam o token CSRF da sessão MFA existente.
+- O backend permanece como autoridade de RBAC, transições, gate financeiro, auditoria e concorrência. A interface mostra somente ações coerentes com o estado observado, mas não substitui a autorização do servidor.
+- Métricas e alertas são derivados apenas dos campos disponíveis. Campos ausentes nos DTOs — como estoque mínimo, nomes de material/cor, inspeções detalhadas e tempos — são explicitamente tratados como limitações, sem mocks.
+- A identidade visual Dark Tech permanece encapsulada no segmento administrativo e usa CSS responsivo sem nova biblioteca de gráficos ou gerenciamento de estado.
+
 ## Etapa 6.2 — Luxury Smart Cart
 
 - `CartProvider` continua sendo a única fonte de estado do carrinho para header, drawer, página completa e checkout. Não existe um segundo carrinho específico do drawer.

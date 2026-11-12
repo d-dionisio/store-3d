@@ -1,0 +1,38 @@
+import{getApiUrl}from"@/lib/env";
+export class ProductionApiError extends Error{constructor(message:string,public status:number){super(message)}}
+const csrf=()=>typeof window==="undefined"?"":sessionStorage.getItem("loja3d_admin_csrf")??"";
+async function request<T>(path:string,init:RequestInit={},cookie?:string){const response=await fetch(`${getApiUrl()}/api/v1/admin/production${path}`,{...init,credentials:"include",cache:"no-store",headers:{Accept:"application/json","Content-Type":"application/json",...(cookie?{Cookie:cookie}:{}),...init.headers}});if(response.status===204)return undefined as T;const body=await response.json().catch(()=>({}))as{data?:T;error?:{message?:string}};if(!response.ok||body.data===undefined)throw new ProductionApiError(body.error?.message??"Falha na API de produção.",response.status);return body.data}
+const mutation=<T>(path:string,method:string,body:unknown)=>request<T>(path,{method,headers:{"X-CSRF-Token":csrf()},body:JSON.stringify(body)});
+export type JobStatus="awaiting_production"|"queued"|"preparing"|"printing"|"quality_check"|"approved"|"failed"|"completed"|"cancelled";
+export type RunStatus="queued"|"preparing"|"printing"|"post_processing"|"quality_check"|"completed"|"failed"|"cancelled";
+export type ProductionRun={id:string;job_id:string;printer_id?:string;status:RunStatus;attempt_number:number;quantity:number;version:number;material_cost_cents:number;energy_cost_cents:number;other_cost_cents:number};
+export type ProductionEvent={id:string;job_id:string;run_id?:string;admin_user_id?:string;previous_status?:string;new_status?:string;description:string;occurred_at:string};
+export type ProductionJob={id:string;job_number:string;order_number:string;product_name:string;status:JobStatus;quantity:number;priority:number;version:number;due_at:string|null;runs?:ProductionRun[];events?:ProductionEvent[]};
+export type ProductionPage={items:ProductionJob[];page:number;limit:number;total:number};
+export type Printer={id:string;code:string;name:string;manufacturer:string;model:string;status:"available"|"busy"|"maintenance"|"offline"|"retired";build_width_mm:number;build_depth_mm:number;build_height_mm:number;nozzle_diameter_microns:number;updated_at:string};
+export type PrinterInput={code:string;name:string;manufacturer:string;model:string;build_width_mm:number;build_depth_mm:number;build_height_mm:number;nozzle_diameter_microns:number};
+export type Spool={id:string;code:string;material_id:string;color_id:string;manufacturer:string;status:"sealed"|"available"|"in_use"|"depleted"|"quarantined"|"discarded";initial_weight_grams:number;current_weight_grams:number;cost_per_kg_cents:number;version:number;updated_at:string};
+export type SpoolInput={code:string;material_id:string;color_id:string;manufacturer:string;product_line:string;lot_number:string;initial_weight_grams:number;current_weight_grams:number;minimum_stock_grams:number;cost_per_kg_cents:number};
+export type InspectionInput={result:"conditional"|"approved"|"rejected";dimensional_accuracy_ok:boolean;visual_quality_ok:boolean;functional_test_ok:boolean|null;notes:string};
+export const listProductionJobs=(cookie?:string,status="",page=1,limit=100)=>request<ProductionPage>(`/jobs?status=${encodeURIComponent(status)}&page=${page}&limit=${limit}`,{},cookie);
+export const getProductionJob=(id:string,cookie?:string)=>request<ProductionJob>(`/jobs/${encodeURIComponent(id)}`,{},cookie);
+export const listPrinters=(cookie?:string)=>request<Printer[]>("/printers",{},cookie);
+export const listSpools=(cookie?:string,status="")=>request<Spool[]>(`/spools?status=${encodeURIComponent(status)}`,{},cookie);
+export const queueJob=(id:string,version:number,description:string)=>mutation<ProductionJob>(`/jobs/${id}/queue`,"POST",{version,description});
+export const prepareJob=(id:string,version:number,printer_id:string)=>mutation<ProductionJob>(`/jobs/${id}/prepare`,"POST",{version,printer_id});
+export const completeJob=(id:string,version:number)=>mutation<ProductionJob>(`/jobs/${id}/complete`,"POST",{version});
+export const cancelJob=(id:string,version:number,description:string)=>mutation<ProductionJob>(`/jobs/${id}/cancel`,"POST",{version,description});
+export const transitionRun=(id:string,action:"start"|"finish"|"fail",version:number,reason="")=>mutation<ProductionRun>(`/runs/${id}/${action}`,"POST",{version,reason});
+export const reprintRun=(id:string,printer_id:string)=>mutation<ProductionRun>(`/runs/${id}/reprint`,"POST",{printer_id});
+export const consumeMaterial=(id:string,spool_id:string,consumed_grams:number,wasted_grams:number)=>mutation<void>(`/runs/${id}/materials`,"POST",{spool_id,consumed_grams,wasted_grams});
+export const inspectRun=(id:string,input:InspectionInput)=>mutation<{id:string}>(`/runs/${id}/inspections`,"POST",input);
+export const approveRun=(id:string,version:number,input:InspectionInput)=>mutation<ProductionRun>(`/runs/${id}/approve`,"POST",{...input,version});
+export const rejectRun=(id:string,input:InspectionInput)=>mutation<{id:string}>(`/runs/${id}/reject`,"POST",input);
+export const createPrinter=(input:PrinterInput)=>mutation<Printer>("/printers","POST",input);
+export const updatePrinter=(id:string,input:PrinterInput)=>mutation<Printer>(`/printers/${id}`,"PUT",input);
+export const changePrinterStatus=(id:string,status:Printer["status"])=>mutation<Printer>(`/printers/${id}/status`,"POST",{status});
+export const registerMaintenance=(id:string,input:{event_type:string;description:string;scheduled_at:string|null;cost_cents:number})=>mutation<{id:string}>(`/printers/${id}/maintenance`,"POST",input);
+export const createSpool=(input:SpoolInput)=>mutation<Spool>("/spools","POST",input);
+export const updateSpool=(id:string,input:SpoolInput,version:number)=>mutation<Spool>(`/spools/${id}`,"PUT",{...input,version});
+export const adjustSpool=(id:string,delta_grams:number,reason:string,version:number)=>mutation<Spool>(`/spools/${id}/adjust`,"POST",{delta_grams,reason,version});
+export const quarantineSpool=(id:string,reason:string,version:number)=>mutation<Spool>(`/spools/${id}/quarantine`,"POST",{reason,version});

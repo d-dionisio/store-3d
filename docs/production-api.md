@@ -48,3 +48,19 @@ Consumo usa `spool_id`, `consumed_grams` e `wasted_grams`. O PostgreSQL bloqueia
 
 Ao reconciliar um pagamento como `paid`, a mesma transação confirma o pedido e chama `create_production_jobs_for_paid_order`. A função bloqueia pedido e pagamento, valida liquidação integral e cria no máximo um job principal por item. Repetição de webhook, reconciliação e retry retorna zero novos jobs sem duplicação.
 
+## Painel administrativo (Etapa 10.4)
+
+- `/admin/producao`: indicadores derivados da listagem real, alertas, prazos e fila com busca, filtros e ordenação locais sobre a página carregada.
+- `/admin/producao/jobs/{id}`: transições do job e das execuções, consumo de bobina, inspeção, aprovação, reprovação e histórico append-only.
+- `/admin/producao/impressoras`: cadastro, status operacional e registro de manutenção.
+- `/admin/producao/materiais`: cadastro, consulta, ajuste versionado e quarentena de bobinas.
+
+O frontend reutiliza a sessão administrativa e envia o token CSRF nas mutações. A API continua sendo a autoridade de RBAC e de transições; respostas `403` e `409` são apresentadas como falha operacional, sem aplicar estado otimista fictício.
+
+Limitações conhecidas do contrato atual:
+
+- `JobView` não expõe data de criação, variante, especificações, material/cor, estimativas nem detalhes das inspeções e consumos. Esses campos não são inventados no painel.
+- `SpoolView` não expõe o limite mínimo, linha/lote ou nomes de material e cor. Por isso, estoque baixo não pode ser calculado e o cadastro ainda exige os UUIDs existentes.
+- Não existe endpoint para consultar histórico de manutenção ou catálogo global de materiais/cores.
+- O dashboard deriva métricas dos até 100 jobs solicitados; totais globais por status exigem um endpoint agregado futuro.
+

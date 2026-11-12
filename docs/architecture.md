@@ -419,3 +419,12 @@ Ainda não foram implementados:
 - Todas as mutações exigem sessão administrativa com role `admin` e token CSRF. Criação, edição, produtos, publicação e despublicação geram eventos em `admin_audit_events`.
 - A interface administrativa usa substituição ordenada transacional para salvar a composição completa; endpoints explícitos de adicionar e remover também são oferecidos para outros clientes.
 
+## Etapa 9.3.1.1 — Luxury Digital Showroom
+
+- O catálogo público deixa de usar o leitor em formato flipbook e adota uma narrativa vertical contínua. O leitor anterior permanece disponível apenas para a prévia administrativa, evitando regressão no painel.
+- `/catalogo` compõe hero, coleções, seleção da edição mais recente, destaques e categorias exclusivamente a partir dos catálogos publicados e de seus produtos comerciais. Não há mocks nem cópia de preço, estoque ou conteúdo de produto.
+- `/catalogo/[slug]` alterna proporções e posicionamentos com base na ordem editorial persistida. A variação é de apresentação; URLs, slugs e dados comerciais continuam sendo os mesmos da API.
+- Interações de revelação ficam em um Client Component isolado com `IntersectionObserver`. Conteúdo, metadados Open Graph e composição permanecem em Server Components; `prefers-reduced-motion` remove animações e rolagem suave.
+- O showroom usa uma folha de estilos restrita ao segmento `/catalogo`, com tokens próprios de ivory, sand, taupe, graphite e white. O Design System global, checkout e painel administrativo não são alterados.
+- Produtos repetidos entre edições são deduplicados apenas para as seleções visuais da home. Isso não cria coleção, preço ou disponibilidade paralelos.
+

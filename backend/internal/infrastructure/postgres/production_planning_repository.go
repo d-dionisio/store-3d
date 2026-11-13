@@ -25,8 +25,10 @@ WITH jobs AS (
         count(*) FILTER (WHERE status='busy') busy,
         count(*) FILTER (WHERE status='maintenance') maintenance FROM printers
 ), materials AS (
- SELECT count(*) FILTER (WHERE status IN ('available','in_use') AND current_weight_grams <= minimum_stock_grams) low
- FROM material_spools
+ SELECT count(*) FILTER (WHERE usable <= minimum) low FROM (
+  SELECT material_id,color_id,sum(current_weight_grams) usable,sum(minimum_stock_grams) minimum
+  FROM material_spools WHERE status IN ('sealed','available','in_use') GROUP BY material_id,color_id
+ ) grouped_materials
 )
 SELECT jobs.awaiting,jobs.queued,runs.printing,jobs.quality,jobs.overdue,jobs.completed,
        printers.available,printers.busy,printers.maintenance,materials.low
@@ -39,7 +41,7 @@ FROM jobs,runs,printers,materials`, since).Scan(
 func (r *ProductionRepository) PlanningInputs(ctx context.Context, filter app.PlanningFilter) ([]app.PlanningInput, int64, error) {
 	var total int64
 	err := r.pool.QueryRow(ctx, `SELECT count(*) FROM production_jobs pj
-WHERE ($1='' OR pj.status=$1) AND ($2::uuid IS NULL OR EXISTS (
+WHERE (($1='' AND pj.status NOT IN ('completed','cancelled')) OR pj.status=$1) AND ($2::uuid IS NULL OR EXISTS (
  SELECT 1 FROM production_runs pr WHERE pr.production_job_id=pj.id AND pr.printer_id=$2::uuid))
 AND ($3::timestamptz IS NULL OR pj.due_at >= $3) AND ($4::timestamptz IS NULL OR pj.due_at <= $4)`,
 		filter.Status, nullableUUID(filter.PrinterID), filter.DueFrom, filter.DueTo).Scan(&total)
@@ -79,7 +81,7 @@ LEFT JOIN LATERAL (
  SELECT percentile_disc(.5) WITHIN GROUP (ORDER BY minutes)::int median_minutes,count(*)::int samples
  FROM candidates WHERE tier=(SELECT min(tier) FROM candidates)
 ) h ON true
-WHERE ($1='' OR pj.status=$1) AND ($2::uuid IS NULL OR latest.printer_id=$2::uuid)
+WHERE (($1='' AND pj.status NOT IN ('completed','cancelled')) OR pj.status=$1) AND ($2::uuid IS NULL OR latest.printer_id=$2::uuid)
  AND ($3::timestamptz IS NULL OR pj.due_at >= $3) AND ($4::timestamptz IS NULL OR pj.due_at <= $4)
 ORDER BY pj.priority DESC,pj.due_at NULLS LAST,pj.created_at
 LIMIT $5 OFFSET $6`, filter.Status, nullableUUID(filter.PrinterID), filter.DueFrom, filter.DueTo, filter.Limit, (filter.Page-1)*filter.Limit)

@@ -14,7 +14,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type ProductionRepository struct{ pool *pgxpool.Pool }
+type productionDB interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+	Begin(context.Context) (pgx.Tx, error)
+}
+
+type ProductionRepository struct{ pool productionDB }
 
 func NewProductionRepository(pool *pgxpool.Pool) *ProductionRepository {
 	return &ProductionRepository{pool: pool}

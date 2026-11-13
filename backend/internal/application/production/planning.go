@@ -61,10 +61,11 @@ type PlanningJob struct {
 }
 
 type PlanningPage struct {
-	Items []PlanningJob `json:"items"`
-	Page  int           `json:"page"`
-	Limit int           `json:"limit"`
-	Total int64         `json:"total"`
+	Items      []PlanningJob            `json:"items"`
+	Page       int                      `json:"page"`
+	Limit      int                      `json:"limit"`
+	Total      int64                    `json:"total"`
+	RiskCounts map[domain.RiskLevel]int `json:"risk_counts"`
 }
 
 type PrinterCapacityView struct {
@@ -124,37 +125,34 @@ func (s *Service) ListProductionPlanning(ctx context.Context, actor admindomain.
 		return PlanningPage{}, ErrInvalid
 	}
 	repositoryFilter := filter
-	if filter.Risk != "" {
-		repositoryFilter.Page = 1
-		repositoryFilter.Limit = 1000000
-	}
+	repositoryFilter.Page = 1
+	repositoryFilter.Limit = 1000000
 	inputs, total, err := s.planning.PlanningInputs(ctx, repositoryFilter)
 	if err != nil {
 		return PlanningPage{}, err
 	}
 	now := time.Now().UTC()
-	result := PlanningPage{Items: []PlanningJob{}, Page: filter.Page, Limit: filter.Limit, Total: total}
+	result := PlanningPage{Items: []PlanningJob{}, Page: filter.Page, Limit: filter.Limit, Total: total, RiskCounts: map[domain.RiskLevel]int{domain.RiskNormal: 0, domain.RiskAttention: 0, domain.RiskOverdue: 0, domain.RiskBlocked: 0}}
 	for _, input := range inputs {
 		forecast := buildForecast(input, now)
 		blocked := domain.IsPrinterUnavailable(input.PrinterStatus) || input.MaterialInsufficient
 		risk, reasons := domain.ClassifyRisk(now, input.DueAt, forecast.EstimatedEndAt, blocked, forecast.EstimatedMinutes == nil)
+		result.RiskCounts[risk]++
 		if filter.Risk != "" && string(risk) != filter.Risk {
 			continue
 		}
 		result.Items = append(result.Items, PlanningJob{ID: input.ID, Number: input.Number, OrderNumber: input.OrderNumber, ProductName: input.ProductName, VariantName: input.VariantName, Status: input.Status, PrinterID: input.PrinterID, PrinterName: input.PrinterName, MaterialName: input.MaterialName, ColorName: input.ColorName, Quantity: input.Quantity, Priority: input.Priority, DueAt: input.DueAt, EstimatedWeightGrams: input.EstimatedWeightGrams, Risk: risk, Reasons: reasons, Forecast: forecast})
 	}
-	if filter.Risk != "" {
-		result.Total = int64(len(result.Items))
-		start := (filter.Page - 1) * filter.Limit
-		if start >= len(result.Items) {
-			result.Items = []PlanningJob{}
-		} else {
-			end := start + filter.Limit
-			if end > len(result.Items) {
-				end = len(result.Items)
-			}
-			result.Items = result.Items[start:end]
+	result.Total = int64(len(result.Items))
+	start := (filter.Page - 1) * filter.Limit
+	if start >= len(result.Items) {
+		result.Items = []PlanningJob{}
+	} else {
+		end := start + filter.Limit
+		if end > len(result.Items) {
+			end = len(result.Items)
 		}
+		result.Items = result.Items[start:end]
 	}
 	return result, nil
 }

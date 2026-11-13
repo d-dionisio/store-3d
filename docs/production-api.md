@@ -1,5 +1,16 @@
 # API administrativa de produção
 
+## Planejamento operacional
+
+Endpoints consultivos, protegidos pela sessão administrativa e disponíveis para `admin`, `production_manager` e `production_operator`:
+
+- `GET /api/v1/admin/production/dashboard`: contagens globais e concluídos nos últimos 30 dias.
+- `GET /api/v1/admin/production/planning`: fila classificada com previsão, confiança e motivos auditáveis. Aceita `status`, `risk`, `printer_id`, `due_from`, `due_to`, `page` e `limit`.
+- `GET /api/v1/admin/production/capacity/printers`: estado cadastrado, execuções, carga conhecida e manutenção.
+- `GET /api/v1/admin/production/planning/materials`: saldo físico utilizável, mínimo, demanda conhecida e demanda sem estimativa.
+
+Estimativas históricas consideram os últimos 90 dias e usam mediana. Ausência de histórico é devolvida como desconhecida; a API não fabrica tempos. `quote_viewer` e usuários anônimos recebem acesso negado.
+
 Todas as rotas usam a sessão administrativa `loja3d_admin_session`. Mutações exigem também `X-CSRF-Token`.
 
 ## Papéis

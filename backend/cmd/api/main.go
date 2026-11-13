@@ -190,7 +190,9 @@ func main() {
 	}
 	paymentService := paymentapp.New(paymentRepository, paymentProvider, mpTTL)
 	paymentHandler := handlers.NewPaymentHandler(paymentService, customerService)
-	productionService := productionapp.New(postgres.NewProductionRepository(pool))
+	productionRepository := postgres.NewProductionRepository(pool)
+	productionService := productionapp.New(productionRepository)
+	productionService.SetPlanningRepository(productionRepository)
 	productionHandler := handlers.NewProductionHandler(productionService, adminService)
 
 	baseHandler := apihttp.NewHandlerCompleteWithProduction(frontendOrigin, databaseHealth, catalogHandler, quoteHandler, adminHandler, customerHandler, shippingHandler, paymentHandler, productionHandler, editorialHandler)

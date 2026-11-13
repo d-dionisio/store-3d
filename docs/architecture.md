@@ -2,7 +2,7 @@
 
 Este documento registra as decisões técnicas vigentes da Loja 3D. Ele deve ser atualizado sempre que uma etapa alterar a arquitetura, os limites do sistema ou uma decisão descrita abaixo.
 
-Última atualização: 9 de novembro de 2026 — Etapa 7.2.
+Última atualização: 13 de novembro de 2026 — Etapa 10.5.
 
 ## Visão geral
 
@@ -269,6 +269,16 @@ Arquivos personalizados:
 - Testes de integração usam `TEST_DATABASE_URL` e PostgreSQL isolado.
 - As migrations são validadas em banco vazio no ciclo `up → down → up`.
 - A suíte SQL de constraints roda em transação com rollback.
+
+## Inteligência operacional da produção (Etapa 10.5)
+
+- O planejamento é consultivo: não reserva material, não altera prioridade, prazo, impressora ou estado.
+- Indicadores globais são agregados no PostgreSQL e não dependem da primeira página da fila.
+- Risco segue a precedência `overdue → blocked → attention → normal`; dados ausentes geram atenção, nunca bloqueio.
+- Previsões usam estimativa explícita ou mediana dos últimos 90 dias, com quantidade de amostras e confiança expostas.
+- A margem operacional é 20%. O dashboard usa período padrão de 30 dias.
+- Bobinas `sealed`, `available` e `in_use` compõem o saldo utilizável; quarentena, descarte e esgotamento são excluídos.
+- Materiais e cores nunca são substituídos automaticamente.
 
 ## Integração frontend/API
 

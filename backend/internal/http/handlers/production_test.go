@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"net/http"
 	"net/http/httptest"
 	"testing"
 )
@@ -15,3 +16,12 @@ func TestProductionHandlerRequiresAdminSession(t *testing.T) {
 	}
 }
 
+func TestProductionPlanningRequiresAdminSession(t *testing.T) {
+	handler := NewProductionHandler(nil, nil)
+	request := httptest.NewRequest("GET", "/api/v1/admin/production/dashboard", nil)
+	recorder := httptest.NewRecorder()
+	handler.ProductionDashboard(recorder, request)
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d", recorder.Code)
+	}
+}

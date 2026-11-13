@@ -135,9 +135,13 @@ type Repository interface {
 	RejectRun(context.Context, string, string, InspectionInput) (string, error)
 }
 
-type Service struct{ repo Repository }
+type Service struct {
+	repo     Repository
+	planning PlanningRepository
+}
 
-func New(repo Repository) *Service { return &Service{repo: repo} }
+func New(repo Repository) *Service                               { return &Service{repo: repo} }
+func (s *Service) SetPlanningRepository(repo PlanningRepository) { s.planning = repo }
 func canRead(s admindomain.Session) bool {
 	return s.Role == "admin" || s.Role == "production_manager" || s.Role == "production_operator"
 }

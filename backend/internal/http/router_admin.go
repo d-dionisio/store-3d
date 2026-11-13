@@ -123,6 +123,10 @@ func newHandler(frontendOrigin string, readiness handlers.ReadinessChecker, cata
 		router.HandleFunc("POST /api/v1/webhooks/mercado-pago", payment.Webhook)
 	}
 	if production != nil {
+		router.HandleFunc("GET /api/v1/admin/production/dashboard", production.ProductionDashboard)
+		router.HandleFunc("GET /api/v1/admin/production/planning", production.ProductionPlanning)
+		router.HandleFunc("GET /api/v1/admin/production/capacity/printers", production.ProductionCapacity)
+		router.HandleFunc("GET /api/v1/admin/production/planning/materials", production.ProductionMaterials)
 		router.HandleFunc("GET /api/v1/admin/production/jobs", production.ListJobs)
 		router.HandleFunc("POST /api/v1/admin/production/orders/{reference}/jobs", production.CreateOrderJobs)
 		router.HandleFunc("GET /api/v1/admin/production/jobs/{id}", production.GetJob)

@@ -383,3 +383,7 @@ Com as migrations 19 a 22 aplicadas, a API e o frontend em execução e uma sess
 
 As ações usam os endpoints administrativos existentes, exigem CSRF e respeitam o RBAC do backend: `admin` e `production_manager` gerenciam recursos e todo o fluxo; `production_operator` executa somente as operações autorizadas. Consulte `docs/production-api.md` para contratos e limitações atuais dos DTOs.
 
+### Planejamento operacional
+
+O dashboard de produção usa agregações globais do PostgreSQL. A visão `/admin/producao/planejamento` apresenta risco, previsão, capacidade das impressoras e necessidade conhecida de material sem alterar a fila ou reservar estoque. Os endpoints de planejamento são somente leitura e aceitam as mesmas roles de consulta da produção. Estimativas históricas usam a mediana dos últimos 90 dias e informam explicitamente quando os dados são insuficientes.
+

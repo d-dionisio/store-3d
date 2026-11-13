@@ -461,6 +461,7 @@ Ainda não foram implementados:
 - O backend permanece como autoridade de RBAC, transições, gate financeiro, auditoria e concorrência. A interface mostra somente ações coerentes com o estado observado, mas não substitui a autorização do servidor.
 - Métricas e alertas são derivados apenas dos campos disponíveis. Campos ausentes nos DTOs — como estoque mínimo, nomes de material/cor, inspeções detalhadas e tempos — são explicitamente tratados como limitações, sem mocks.
 - A identidade visual Dark Tech permanece encapsulada no segmento administrativo e usa CSS responsivo sem nova biblioteca de gráficos ou gerenciamento de estado.
+- A homologação operacional usa `loja_3d_production_test`, isolado do banco de desenvolvimento. O ciclo completo, RBAC, CSRF, concorrência e recursos são exercitados contra PostgreSQL real; evidências e limitações estão em `docs/production-panel-homologation.md`.
 
 ## Etapa 6.2 — Luxury Smart Cart
 

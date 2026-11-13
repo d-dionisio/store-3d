@@ -54,7 +54,8 @@ func TestProductionIntegrityIntegration(t *testing.T) {
 	mustScan(`INSERT INTO materials(code,name) VALUES($1,$2) RETURNING id`, []any{"mat-" + suffix, "Material " + suffix}, &materialID)
 	mustScan(`INSERT INTO colors(slug,name,hex_code) VALUES($1,$2,'#112233') RETURNING id`, []any{"cor-" + suffix, "Cor " + suffix}, &colorID)
 	mustScan(`INSERT INTO categories(name,slug) VALUES($1,$2) RETURNING id`, []any{"Categoria " + suffix, "categoria-" + suffix}, &categoryID)
-	mustScan(`INSERT INTO products(category_id,slug,name,description,status) VALUES($1,$2,$3,'Teste','active') RETURNING id`, []any{categoryID, "produto-" + suffix, "Produto " + suffix}, &productID)
+	// Production fixtures must never enter the commercial catalog queries.
+	mustScan(`INSERT INTO products(category_id,slug,name,description,status) VALUES($1,$2,$3,'Teste','draft') RETURNING id`, []any{categoryID, "produto-" + suffix, "Produto " + suffix}, &productID)
 	mustScan(`INSERT INTO product_variants(product_id,material_id,color_id,sku,price_cents,stock_quantity) VALUES($1,$2,$3,$4,1000,10) RETURNING id`, []any{productID, materialID, colorID, "SKU-" + suffix}, &variantID)
 	mustScan(`INSERT INTO users(email,full_name,email_verified_at) VALUES($1,'Cliente Produção',now()) RETURNING id`, []any{"production-" + suffix + "@example.com"}, &userID)
 	mustScan(`INSERT INTO orders(order_number,user_id,status,customer_name,customer_email,subtotal_cents,total_cents,payment_readiness) VALUES($1,$2,'confirmed','Cliente Produção',$3,1000,1000,'ready') RETURNING id`, []any{"PED-PROD-" + suffix, userID, "production-" + suffix + "@example.com"}, &orderID)

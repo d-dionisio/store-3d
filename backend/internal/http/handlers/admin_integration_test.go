@@ -31,8 +31,9 @@ func TestAdminHTTPAuthorizationIntegration(t *testing.T) {
 	}
 	defer pool.Close()
 	hash, _ := bcrypt.GenerateFromPassword([]byte("HTTP-Integration-2026!"), bcrypt.MinCost)
+	emailAdmin := "http-admin-" + time.Now().Format("150405000000000") + "@example.com"
 	var userID string
-	err = pool.QueryRow(context.Background(), `INSERT INTO admin_users(email,full_name,password_hash,role) VALUES('http-admin@example.com','HTTP Admin',$1,'admin') ON CONFLICT((lower(email))) DO UPDATE SET password_hash=excluded.password_hash,status='active' RETURNING id`, string(hash)).Scan(&userID)
+	err = pool.QueryRow(context.Background(), `INSERT INTO admin_users(email,full_name,password_hash,role) VALUES($1,'HTTP Admin',$2,'admin') RETURNING id`, emailAdmin, string(hash)).Scan(&userID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,13 +46,13 @@ func TestAdminHTTPAuthorizationIntegration(t *testing.T) {
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthorized status=%d", response.Code)
 	}
-	invalidLogin := httptest.NewRequest(http.MethodPost, "/api/v1/admin/session", bytes.NewBufferString(`{"email":"http-admin@example.com","password":"wrong-password"}`))
+	invalidLogin := httptest.NewRequest(http.MethodPost, "/api/v1/admin/session", bytes.NewBufferString(`{"email":"`+emailAdmin+`","password":"wrong-password"}`))
 	invalidLoginResponse := httptest.NewRecorder()
 	router.ServeHTTP(invalidLoginResponse, invalidLogin)
 	if invalidLoginResponse.Code != http.StatusUnauthorized {
 		t.Fatalf("invalid login status=%d", invalidLoginResponse.Code)
 	}
-	login := httptest.NewRequest(http.MethodPost, "/api/v1/admin/session", bytes.NewBufferString(`{"email":"http-admin@example.com","password":"HTTP-Integration-2026!"}`))
+	login := httptest.NewRequest(http.MethodPost, "/api/v1/admin/session", bytes.NewBufferString(`{"email":"`+emailAdmin+`","password":"HTTP-Integration-2026!"}`))
 	login.Header.Set("Content-Type", "application/json")
 	loginResponse := httptest.NewRecorder()
 	router.ServeHTTP(loginResponse, login)

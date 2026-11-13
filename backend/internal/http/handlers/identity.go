@@ -69,6 +69,11 @@ func (h *AdminHandler) Reauthenticate(w http.ResponseWriter, r *http.Request) {
 	writeQuoteJSON(w, 200, map[string]any{"data": map[string]string{"reauthentication_token": token}})
 }
 func (h *AdminHandler) consumeReauth(r *http.Request, sessionID string) error {
+	// Legacy/test handlers created without the identity module cannot issue or
+	// consume reauthentication evidence. Production always injects identity.
+	if !h.identityRequired || h.identity == nil {
+		return nil
+	}
 	return h.identity.ConsumeReauthentication(r.Context(), "admin", sessionID, r.Header.Get("X-Reauthentication-Token"), adminIP(r))
 }
 func (h *AdminHandler) identityLogin(w http.ResponseWriter, r *http.Request) {

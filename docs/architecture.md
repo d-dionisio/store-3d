@@ -519,3 +519,12 @@ Ainda não foram implementados:
 - A outbox usa keyring independente do MFA, recifra por `cmd/email-key`, encerra payloads expirados/suprimidos antes do envio e aplica retenção configurável somente às tabelas operacionais de e-mail.
 - Limites, rotação, retenção, ingresso HTTPS, DNS e rollback estão em `docs/transactional-email.md`.
 
+## Etapa 10.5 — inteligência e homologação de produção
+
+- O planejamento ativo exclui `completed` e `cancelled` por padrão; esses estados só entram quando solicitados explicitamente.
+- A previsão prioriza, nesta ordem, histórico da mesma variante e modelo de impressora, mesmo produto e modelo, e mesmo produto independentemente do modelo. Somente execuções concluídas, positivas e dos últimos 90 dias participam.
+- A duração histórica usa mediana contínua arredondada. A confiança deriva da quantidade da amostra e a API preserva origem e tamanho da amostra para não apresentar estimativas como certezas.
+- Contagens de risco são globais ao conjunto filtrado e calculadas antes da paginação. Estoque baixo é agregado por material e cor.
+- Testes destrutivos exigem `TEST_DATABASE_URL` diferente de `DATABASE_URL` e banco com sufixo `_test`. Fixtures transacionais usam rollback; testes concorrentes removem somente IDs exatos em cleanup registrado.
+- Evidências de PostgreSQL e o procedimento visual estão em `docs/evidence/production-planning/`.
+

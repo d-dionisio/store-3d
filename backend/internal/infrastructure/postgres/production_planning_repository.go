@@ -78,7 +78,7 @@ LEFT JOIN LATERAL (
     AND coalesce(prh.actual_minutes,extract(epoch FROM (prh.completed_at-prh.started_at))/60)::int > 0
     AND oih.product_id=oi.product_id
  )
- SELECT percentile_disc(.5) WITHIN GROUP (ORDER BY minutes)::int median_minutes,count(*)::int samples
+ SELECT round(percentile_cont(.5) WITHIN GROUP (ORDER BY minutes))::int median_minutes,count(*)::int samples
  FROM candidates WHERE tier=(SELECT min(tier) FROM candidates)
 ) h ON true
 WHERE (($1='' AND pj.status NOT IN ('completed','cancelled')) OR pj.status=$1) AND ($2::uuid IS NULL OR latest.printer_id=$2::uuid)

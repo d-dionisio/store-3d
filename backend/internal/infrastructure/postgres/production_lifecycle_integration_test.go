@@ -39,10 +39,12 @@ func TestProductionLifecycleIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Close()
+	t.Cleanup(pool.Close)
 
 	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
 	var materialID, colorID, categoryID, productID, variantID, userID, orderID, adminID string
+	fixtureRoots := &productionFixtureRoots{}
+	registerProductionFixtureCleanup(t, pool, fixtureRoots)
 	mustScan := func(query string, args []any, destination ...any) {
 		t.Helper()
 		if scanErr := pool.QueryRow(ctx, query, args...).Scan(destination...); scanErr != nil {
@@ -67,6 +69,7 @@ func TestProductionLifecycleIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustScan(`INSERT INTO admin_users(email,full_name,password_hash,role) VALUES($1,'Gerente Homologação',repeat('x',60),'production_manager') RETURNING id`, []any{"manager-life-" + suffix + "@example.test"}, &adminID)
+	*fixtureRoots = productionFixtureRoots{OrderID: orderID, UserID: userID, AdminID: adminID, VariantID: variantID, ProductID: productID, CategoryID: categoryID, MaterialID: materialID, ColorID: colorID}
 
 	manager := admindomain.Session{UserID: adminID, Role: "production_manager"}
 	operator := admindomain.Session{UserID: adminID, Role: "production_operator"}
@@ -98,6 +101,7 @@ func TestProductionLifecycleIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	fixtureRoots.PrinterID = printer.ID
 	printer, err = service.ChangePrinterStatus(ctx, manager, printer.ID, "maintenance")
 	if err != nil || printer.Status != "maintenance" {
 		t.Fatalf("printer maintenance: %+v %v", printer, err)
@@ -113,6 +117,7 @@ func TestProductionLifecycleIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	fixtureRoots.SpoolID = spool.ID
 	spool, err = service.AdjustSpoolBalance(ctx, manager, spool.ID, -10, "Calibração de balança", spool.Version)
 	if err != nil || spool.CurrentWeightGrams != 990 {
 		t.Fatalf("spool adjustment: %+v %v", spool, err)

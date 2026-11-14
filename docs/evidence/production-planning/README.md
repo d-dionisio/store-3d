@@ -51,3 +51,25 @@ Foram observados sequential scans. Para apenas 165 jobs, 174 linhas intermediár
 ## Homologação visual
 
 Não realizada nesta execução: não havia ferramenta de navegador/Playwright disponível e uma sessão administrativa real com MFA não foi fornecida ao processo. Nenhuma captura simulada foi criada. Permanecem pendentes as quatro resoluções solicitadas e a gravação de screenshots reais neste diretório.
+
+O procedimento reproduzível está em `manual-visual-checklist.md`.
+
+## Fechamento 10.5.2
+
+- A hierarquia histórica foi validada contra PostgreSQL real: mesma variante/modelo, mesmo produto/modelo, mesmo produto independente do modelo e ausência de histórico.
+- A consulta usa uma janela móvel de 90 dias, ignora execuções incompletas ou com duração não positiva e sempre seleciona o nível mais específico disponível.
+- Para amostras pares, a mediana agora é a média dos dois valores centrais (`percentile_cont` arredondado), corrigindo o comportamento anterior de escolher o menor valor central.
+- Os testes verificam contagem de amostras e confiança `low`, `medium`, `high` e `unknown`.
+- Os testes legados de ciclo de vida e integridade passaram a remover somente os IDs exatos que criaram. Uma nova rodada não aumenta as fixtures persistentes.
+- Foram encontrados dez grafos antigos no banco `_test`, anteriores ao novo cleanup. Eles foram preservados nesta etapa: a correção impede recorrência, sem fazer uma exclusão retroativa ampla ou ambígua.
+
+### Verificações finais
+
+- `go test ./...`: aprovado, incluindo PostgreSQL real.
+- `go vet ./...`: aprovado.
+- `npm run lint`: aprovado.
+- `npm test -- --run`: 9 arquivos e 26 testes aprovados.
+- `npx tsc --noEmit`: aprovado.
+- `npm run build`: aprovado; 16 páginas estáticas geradas e rotas dinâmicas compiladas.
+
+O primeiro teste/build frontend dentro do sandbox encontrou, respectivamente, bloqueio de subprocesso (`spawn EPERM`) e bloqueio de rede ao Google Fonts. Ambos passaram sem mudança de código quando repetidos com as permissões necessárias. A tentativa final de reconsultar as contagens pelo container não foi possível porque o Docker Desktop já não estava ativo; a última medição disponível, feita depois dos testes específicos de cleanup, permaneceu em dez grafos legados.

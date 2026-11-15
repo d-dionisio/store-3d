@@ -75,3 +75,7 @@ Limitações conhecidas do contrato atual:
 - Não existe endpoint para consultar histórico de manutenção ou catálogo global de materiais/cores.
 - O dashboard deriva métricas dos até 100 jobs solicitados; totais globais por status exigem um endpoint agregado futuro.
 
+# Otimização consultiva
+
+As rotas administrativas de otimização são `GET /api/v1/admin/production/optimization`, `GET /api/v1/admin/production/optimization/recommendations` e `POST /api/v1/admin/production/optimization/simulate`. O POST recebe `{"strategy":"combined"}` e exige CSRF, embora seja somente uma simulação. As estratégias e o contrato conceitual estão em `docs/production-optimization.md`.
+

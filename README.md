@@ -8,6 +8,10 @@ O storefront público utiliza a linguagem **Editorial Luxury**: Cormorant Garamo
 
 Os assets editoriais são locais em `frontend/public/images`, evitando dependência de imagens remotas. O redesign não altera contratos da API, autenticação, carrinho, frete ou pagamentos.
 
+## Otimização consultiva da produção
+
+O painel `/admin/producao/otimizacao` compara FIFO, menor tempo, menor prazo, agrupamento por material/cor e uma estratégia combinada. O motor apenas recomenda e simula: não atribui impressoras, altera filas, reserva bobinas ou executa transições. Contratos, pontuação e limitações estão em [`docs/production-optimization.md`](docs/production-optimization.md).
+
 ## Pré-requisitos
 
 - Node.js 22 ou superior e npm

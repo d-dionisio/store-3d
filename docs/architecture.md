@@ -528,3 +528,12 @@ Ainda não foram implementados:
 - Testes destrutivos exigem `TEST_DATABASE_URL` diferente de `DATABASE_URL` e banco com sufixo `_test`. Fixtures transacionais usam rollback; testes concorrentes removem somente IDs exatos em cleanup registrado.
 - Evidências de PostgreSQL e o procedimento visual estão em `docs/evidence/production-planning/`.
 
+## Etapa 10.6 — otimização consultiva
+
+- Compatibilidade, pontuação, sequenciamento e simulação são funções puras no domínio; a aplicação apenas autoriza, obtém um snapshot somente leitura e compõe DTOs.
+- O motor nunca executa transições. Não há endpoint de “aplicar recomendação”, reserva, atribuição ou consumo automático.
+- Dimensões comprovadamente incompatíveis eliminam uma impressora. Ausência de dimensões ou capacidade técnica por material é comunicada como dado insuficiente/ressalva, nunca como incompatibilidade presumida.
+- As cinco estratégias compartilham desempates determinísticos. Resultados iguais permanecem reproduzíveis por data de criação e identificador.
+- A infraestrutura limita histórico a 90 dias e carrega jobs, impressoras e carga em consultas agregadas, sem N+1.
+- Critérios e limitações estão detalhados em `docs/production-optimization.md`.
+

@@ -20,6 +20,12 @@ export type PlanningJob={id:string;job_number:string;order_number:string;product
 export type PlanningPage={items:PlanningJob[];page:number;limit:number;total:number;risk_counts:Record<RiskLevel,number>};
 export type PrinterCapacity={id:string;code:string;name:string;manufacturer:string;model:string;status:Printer["status"];assigned_jobs:number;active_runs:number;known_minutes:number;available:boolean;next_available_at:string|null;maintenance_events:number;last_maintenance_at:string|null};
 export type MaterialPlanning={material_id:string;material_name:string;color_id:string;color_name:string;usable_grams:number;minimum_stock_grams:number;known_required_grams:number;unknown_demand_jobs:number;spool_count:number;insufficient:boolean};
+export type OptimizationStrategy="fifo"|"shortest_processing_time"|"earliest_due_date"|"material_color_grouping"|"combined";
+export type Compatibility="compatible"|"compatible_with_caveats"|"incompatible"|"insufficient_data";
+export type PrinterRecommendation={printer_id:string;printer_name:string;score:number;compatibility:Compatibility;confidence:"unknown"|"low"|"medium"|"high";reasons:{code:string;message:string}[];missing_data:string[]};
+export type JobRecommendation={job_id:string;job_number:string;product_name:string;risk:RiskLevel;recommended:PrinterRecommendation|null;alternatives:PrinterRecommendation[]};
+export type OptimizationSimulation={strategy:OptimizationStrategy;schedule:{job_id:string;job_number:string;printer_id:string;printer_name:string;position:number;starts_at:string|null;ends_at:string|null;estimated_minutes:number|null;compatibility:Compatibility}[];total_estimated_minutes:number|null;printer_utilization:Record<string,number>;potentially_late_jobs:number;material_changes:number;unassigned_jobs:number;missing_estimate_jobs:number;confidence:"unknown"|"low"|"medium"|"high";resource_warnings:string[]};
+export type OptimizationOverview={generated_at:string;consultative_only:true;jobs:number;printers:number;recommendations:JobRecommendation[];strategies:OptimizationSimulation[];limitations:string[]};
 export const listProductionJobs=(cookie?:string,status="",page=1,limit=100)=>request<ProductionPage>(`/jobs?status=${encodeURIComponent(status)}&page=${page}&limit=${limit}`,{},cookie);
 export const getProductionJob=(id:string,cookie?:string)=>request<ProductionJob>(`/jobs/${encodeURIComponent(id)}`,{},cookie);
 export const listPrinters=(cookie?:string)=>request<Printer[]>("/printers",{},cookie);
@@ -28,6 +34,8 @@ export const getProductionDashboard=(cookie?:string)=>request<ProductionDashboar
 export const listProductionPlanning=(cookie?:string,params:Record<string,string|number|undefined>={})=>{const query=new URLSearchParams();Object.entries(params).forEach(([key,value])=>{if(value!==undefined&&value!=="")query.set(key,String(value))});return request<PlanningPage>(`/planning?${query}`,{},cookie)};
 export const getPrinterCapacity=(cookie?:string)=>request<PrinterCapacity[]>("/capacity/printers",{},cookie);
 export const getMaterialPlanning=(cookie?:string)=>request<MaterialPlanning[]>("/planning/materials",{},cookie);
+export const getProductionOptimization=(cookie?:string)=>request<OptimizationOverview>("/optimization",{},cookie);
+export const simulateProductionOptimization=(strategy:OptimizationStrategy)=>mutation<OptimizationSimulation>("/optimization/simulate","POST",{strategy});
 export const queueJob=(id:string,version:number,description:string)=>mutation<ProductionJob>(`/jobs/${id}/queue`,"POST",{version,description});
 export const prepareJob=(id:string,version:number,printer_id:string)=>mutation<ProductionJob>(`/jobs/${id}/prepare`,"POST",{version,printer_id});
 export const completeJob=(id:string,version:number)=>mutation<ProductionJob>(`/jobs/${id}/complete`,"POST",{version});

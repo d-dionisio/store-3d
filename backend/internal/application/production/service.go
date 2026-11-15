@@ -136,12 +136,14 @@ type Repository interface {
 }
 
 type Service struct {
-	repo     Repository
-	planning PlanningRepository
+	repo         Repository
+	planning     PlanningRepository
+	optimization OptimizationRepository
 }
 
-func New(repo Repository) *Service                               { return &Service{repo: repo} }
-func (s *Service) SetPlanningRepository(repo PlanningRepository) { s.planning = repo }
+func New(repo Repository) *Service                                       { return &Service{repo: repo} }
+func (s *Service) SetPlanningRepository(repo PlanningRepository)         { s.planning = repo }
+func (s *Service) SetOptimizationRepository(repo OptimizationRepository) { s.optimization = repo }
 func canRead(s admindomain.Session) bool {
 	return s.Role == "admin" || s.Role == "production_manager" || s.Role == "production_operator"
 }

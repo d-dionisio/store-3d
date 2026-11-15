@@ -1,0 +1,10 @@
+DROP TRIGGER IF EXISTS spool_installations_history_guard ON spool_installations;
+DROP FUNCTION IF EXISTS guard_spool_installation_history();
+DROP TABLE IF EXISTS spool_installations;
+DROP TABLE IF EXISTS material_technical_specs;
+DROP TABLE IF EXISTS printer_operational_configs;
+DROP TABLE IF EXISTS printer_features;
+DROP TABLE IF EXISTS printer_build_surfaces;
+DROP TABLE IF EXISTS printer_supported_materials;
+DROP TABLE IF EXISTS printer_supported_nozzles;
+DROP TABLE IF EXISTS printer_technical_specs;

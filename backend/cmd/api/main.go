@@ -194,6 +194,7 @@ func main() {
 	productionService := productionapp.New(productionRepository)
 	productionService.SetPlanningRepository(productionRepository)
 	productionService.SetOptimizationRepository(productionRepository)
+	productionService.SetTechnicalRepository(productionRepository)
 	productionHandler := handlers.NewProductionHandler(productionService, adminService)
 
 	baseHandler := apihttp.NewHandlerCompleteWithProduction(frontendOrigin, databaseHealth, catalogHandler, quoteHandler, adminHandler, customerHandler, shippingHandler, paymentHandler, productionHandler, editorialHandler)

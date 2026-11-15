@@ -34,12 +34,22 @@ type OptimizationJob struct {
 	DueAt                                                                 *time.Time
 	CreatedAt                                                             time.Time
 	WidthMM, DepthMM, HeightMM, EstimatedMinutes                          *int
+	PrintTempC, BedTempC                                                  *int
+	RequiresEnclosure                                                     *bool
+	RequiredSurface                                                       string
+	MaterialSpecsVerified                                                 bool
 	Confidence                                                            ForecastConfidence
 }
 
 type OptimizationPrinter struct {
 	ID, Name, Model, Status, CurrentMaterialID, CurrentColorID string
 	BuildWidthMM, BuildDepthMM, BuildHeightMM, KnownMinutes    int
+	MaxHotendTempC, MaxBedTempC, InstalledNozzleMicrons        *int
+	EnclosedChamber                                            *bool
+	InstalledNozzleType, InstalledSurface                      string
+	TechnicalSpecsVerified, OperationalConfigReady             bool
+	SupportedMaterialIDs                                       map[string]bool
+	SupportedNozzles                                           map[int]bool
 }
 
 type CompatibilityResult struct {
@@ -58,7 +68,31 @@ func EvaluateCompatibility(job OptimizationJob, printer OptimizationPrinter) Com
 	if *job.WidthMM > printer.BuildWidthMM || *job.DepthMM > printer.BuildDepthMM || *job.HeightMM > printer.BuildHeightMM {
 		return CompatibilityResult{Status: CompatibilityInvalid, Reasons: []RiskReason{{Code: "build_volume_exceeded", Message: "A peça excede o volume útil cadastrado da impressora."}}}
 	}
-	return CompatibilityResult{Status: CompatibilityCaveat, Reasons: []RiskReason{{Code: "dimensions_fit", Message: "A peça cabe no volume útil cadastrado."}, {Code: "material_capability_unknown", Message: "A capacidade técnica por material ainda não está cadastrada."}}, MissingData: []string{"printer_material_capabilities"}}
+	result := CompatibilityResult{Status: CompatibilityCompatible, Reasons: []RiskReason{{Code: "dimensions_fit", Message: "A peça cabe no volume útil cadastrado."}}, MissingData: []string{}}
+	if !printer.TechnicalSpecsVerified || !printer.OperationalConfigReady || !job.MaterialSpecsVerified {
+		return CompatibilityResult{Status: CompatibilityUnknown, Reasons: append(result.Reasons, RiskReason{Code: "technical_configuration_unknown", Message: "Especificações verificadas e configuração operacional são necessárias."}), MissingData: []string{"verified_printer_specs", "operational_configuration", "verified_material_specs"}}
+	}
+	if !printer.SupportedMaterialIDs[job.MaterialID] {
+		return CompatibilityResult{Status: CompatibilityInvalid, Reasons: append(result.Reasons, RiskReason{Code: "material_not_supported", Message: "O material não consta entre os materiais suportados nesta especificação."})}
+	}
+	if printer.InstalledNozzleMicrons == nil || !printer.SupportedNozzles[*printer.InstalledNozzleMicrons] {
+		return CompatibilityResult{Status: CompatibilityInvalid, Reasons: append(result.Reasons, RiskReason{Code: "nozzle_not_supported", Message: "O bico instalado não pertence às configurações suportadas."})}
+	}
+	if job.PrintTempC == nil || printer.MaxHotendTempC == nil || job.BedTempC == nil || printer.MaxBedTempC == nil {
+		return CompatibilityResult{Status: CompatibilityUnknown, Reasons: append(result.Reasons, RiskReason{Code: "temperature_unknown", Message: "Faltam temperaturas recomendadas ou limites documentados."}), MissingData: []string{"temperature_limits"}}
+	}
+	if *job.PrintTempC > *printer.MaxHotendTempC || *job.BedTempC > *printer.MaxBedTempC {
+		return CompatibilityResult{Status: CompatibilityInvalid, Reasons: append(result.Reasons, RiskReason{Code: "temperature_limit_exceeded", Message: "A temperatura recomendada excede o limite documentado do equipamento."})}
+	}
+	if job.RequiresEnclosure != nil && *job.RequiresEnclosure && (printer.EnclosedChamber == nil || !*printer.EnclosedChamber) {
+		return CompatibilityResult{Status: CompatibilityInvalid, Reasons: append(result.Reasons, RiskReason{Code: "enclosure_required", Message: "O material exige ambiente fechado."})}
+	}
+	if job.RequiredSurface != "" && printer.InstalledSurface != job.RequiredSurface {
+		result.Status = CompatibilityCaveat
+		result.Reasons = append(result.Reasons, RiskReason{Code: "surface_change_required", Message: "A superfície instalada não corresponde à recomendada."})
+	}
+	result.Reasons = append(result.Reasons, RiskReason{Code: "technical_compatibility_confirmed", Message: "Limites verificados, material e bico são compatíveis."})
+	return result
 }
 
 type PrinterRecommendation struct {

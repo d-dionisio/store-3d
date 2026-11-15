@@ -34,3 +34,19 @@ func TestProductionPaginationValidation(t *testing.T) {
 		t.Fatalf("invalid page accepted: %v", err)
 	}
 }
+
+func TestTechnicalManagementAuthorizationBoundaries(t *testing.T) {
+	service := New(nil)
+	viewer := admindomain.Session{UserID: "viewer", Role: "quote_viewer"}
+	operator := admindomain.Session{UserID: "operator", Role: "production_operator"}
+
+	if _, err := service.ListPrinterSpecs(context.Background(), viewer); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("quote viewer accessed technical specifications: %v", err)
+	}
+	if _, err := service.SavePrinterSpec(context.Background(), operator, "printer", PrinterSpecInput{}); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("operator changed technical specifications: %v", err)
+	}
+	if _, err := service.InstallSpool(context.Background(), operator, "printer", "spool", 1); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("operator installed spool: %v", err)
+	}
+}

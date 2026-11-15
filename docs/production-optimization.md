@@ -8,8 +8,8 @@ O PostgreSQL fornece dimensões da variante e volume útil cadastrado da impress
 
 - `incompatible`: impressora indisponível ou volume útil comprovadamente excedido;
 - `insufficient_data`: dimensões da variante ausentes;
-- `compatible_with_caveats`: dimensões cabem, mas capacidades por material/temperatura ainda não estão modeladas;
-- `compatible`: reservado para quando todos os requisitos técnicos forem modelados e comprovados.
+- `compatible_with_caveats`: requisitos conhecidos são atendidos, mas há uma ressalva técnica explícita;
+- `compatible`: especificações verificadas, configuração instalada e requisitos técnicos comprovadamente compatíveis.
 
 Ausência de dados nunca é convertida em incompatibilidade.
 
@@ -50,11 +50,13 @@ Todas as rotas exigem `admin`, `production_manager` ou `production_operator`. `q
 
 ## Limitações
 
-- não existem capacidades da impressora por material, temperatura ou processo;
-- não existe estado confiável de bobina fisicamente carregada;
+- capacidades só são confiáveis após cadastro com fonte e estado `verified`;
+- bobinas sem instalação registrada permanecem explicitamente desconhecidas;
 - dimensões ausentes e histórico insuficiente são explicitados;
 - utilização é uma projeção relativa sobre a carga conhecida, não telemetria;
 - a recomendação necessita aprovação humana e não possui endpoint de aplicação automática.
+
+Desde a Etapa 10.7, o snapshot considera material suportado, limites de temperatura, ambiente fechado, bico e superfície instalados e bobinas fisicamente carregadas. Os novos critérios refinam a compatibilidade e o bônus de material/cor; não alteram as cinco estratégias nem executam decisões automaticamente.
 
 ## Evidência PostgreSQL
 

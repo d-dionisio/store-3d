@@ -391,3 +391,9 @@ As ações usam os endpoints administrativos existentes, exigem CSRF e respeitam
 
 O dashboard de produção usa agregações globais do PostgreSQL. A visão `/admin/producao/planejamento` apresenta risco, previsão, capacidade das impressoras e necessidade conhecida de material sem alterar a fila ou reservar estoque. Os endpoints de planejamento são somente leitura e aceitam as mesmas roles de consulta da produção. Estimativas históricas usam a mediana dos últimos 90 dias e informam explicitamente quando os dados são insuficientes.
 
+### Gestão técnica de produção
+
+A migration 26 adiciona especificações versionadas, configuração instalada e histórico de bobinas sem preencher capacidades desconhecidas. Aplique com `cd backend` e `go run ./cmd/migrate up`. No painel, use `/admin/producao/impressoras`, `/admin/producao/materiais` e `/admin/producao/compatibilidade`.
+
+`admin` e `production_manager` alteram dados técnicos; `production_operator` possui consulta operacional. Todas as mutações exigem CSRF e preservam a autenticação MFA existente. Consulte `docs/printer-technical-specifications.md`, `docs/material-compatibility.md` e `docs/production-api.md`.
+

@@ -79,3 +79,19 @@ Limitações conhecidas do contrato atual:
 
 As rotas administrativas de otimização são `GET /api/v1/admin/production/optimization`, `GET /api/v1/admin/production/optimization/recommendations` e `POST /api/v1/admin/production/optimization/simulate`. O POST recebe `{"strategy":"combined"}` e exige CSRF, embora seja somente uma simulação. As estratégias e o contrato conceitual estão em `docs/production-optimization.md`.
 
+## Gestão técnica (Etapa 10.7)
+
+Leituras exigem `admin`, `production_manager` ou `production_operator`; mutações exigem `admin` ou `production_manager`, sessão MFA e CSRF.
+
+- `GET /printer-technical-specs`
+- `GET|PUT /printers/{id}/technical-specs`
+- `GET /printers/{id}/technical-specs/history`
+- `PUT /printers/{id}/operational-config`
+- `GET /materials`
+- `GET|PUT /materials/{id}/technical-specs`
+- `GET|POST /spool-installations`
+- `POST /spool-installations/{id}/remove`
+- `POST /compatibility/simulate`
+
+Todos os caminhos têm o prefixo `/api/v1/admin/production`. Atualizações recebem `expected_version`; conflitos retornam 409. Valores técnicos desconhecidos são `null`, e a simulação retorna classificação, motivos e dados ausentes.
+

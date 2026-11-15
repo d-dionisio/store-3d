@@ -139,6 +139,7 @@ type Service struct {
 	repo         Repository
 	planning     PlanningRepository
 	optimization OptimizationRepository
+	technical    TechnicalRepository
 }
 
 func New(repo Repository) *Service                                       { return &Service{repo: repo} }

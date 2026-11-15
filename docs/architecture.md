@@ -537,3 +537,11 @@ Ainda não foram implementados:
 - A infraestrutura limita histórico a 90 dias e carrega jobs, impressoras e carga em consultas agregadas, sem N+1.
 - Critérios e limitações estão detalhados em `docs/production-optimization.md`.
 
+## Etapa 10.7 — capacidades técnicas de fabricação
+
+- `printers`, `materials` e `material_spools` continuam como identidades operacionais existentes. Capacidades documentadas, requisitos técnicos e instalações físicas são extensões relacionadas, não cadastros paralelos.
+- Especificações de impressora são versionadas e preservadas; configuração instalada é mutável com concorrência otimista. Dados desconhecidos permanecem nulos e uma versão verificada exige fonte.
+- Instalações de bobina possuem unicidade parcial por bobina e por slot e histórico encerrado imutável. Consumos produtivos anteriores não são reescritos.
+- Compatibilidade é uma função de domínio explicável com quatro estados. O motor 10.6 reutiliza a mesma semântica e continua somente leitura e sujeito à decisão humana.
+- A migration 26 é aditiva e reversível, sem backfill técnico inventado. Procedimentos estão em `docs/printer-technical-specifications.md` e `docs/material-compatibility.md`.
+

@@ -19,7 +19,7 @@ func TestCompatibilityDoesNotInventCapabilities(t *testing.T) {
 		t.Fatalf("large=%s", tooLarge.Status)
 	}
 	fit := EvaluateCompatibility(OptimizationJob{WidthMM: intPtr(100), DepthMM: intPtr(100), HeightMM: intPtr(100)}, printer)
-	if fit.Status != CompatibilityCaveat || len(fit.MissingData) == 0 {
+	if fit.Status != CompatibilityUnknown || len(fit.MissingData) == 0 {
 		t.Fatalf("fit=%+v", fit)
 	}
 	offline := printer

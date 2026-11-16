@@ -95,3 +95,13 @@ Leituras exigem `admin`, `production_manager` ou `production_operator`; mutaçõ
 
 Todos os caminhos têm o prefixo `/api/v1/admin/production`. Atualizações recebem `expected_version`; conflitos retornam 409. Valores técnicos desconhecidos são `null`, e a simulação retorna classificação, motivos e dados ausentes.
 
+## Monitoramento (Etapa 10.8)
+
+- `GET /printers/{id}/monitoring` e `/telemetry`
+- `GET|PUT /printers/{id}/connection`
+- `POST /printers/{id}/connection/test`
+- `GET /printers/{id}/connection/events`
+- `GET /printers/{id}/observed-jobs`
+
+Configuração/teste exigem `admin` ou `production_manager`, MFA e CSRF. Consultas permitem `production_operator`. A credencial nunca aparece na resposta.
+

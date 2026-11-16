@@ -136,10 +136,13 @@ type Repository interface {
 }
 
 type Service struct {
-	repo         Repository
-	planning     PlanningRepository
-	optimization OptimizationRepository
-	technical    TechnicalRepository
+	repo             Repository
+	planning         PlanningRepository
+	optimization     OptimizationRepository
+	technical        TechnicalRepository
+	monitoring       MonitoringRepository
+	connectionTester PrinterProvider
+	monitoringCipher CredentialEncryptor
 }
 
 func New(repo Repository) *Service                                       { return &Service{repo: repo} }

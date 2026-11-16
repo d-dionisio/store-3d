@@ -397,3 +397,7 @@ A migration 26 adiciona especificações versionadas, configuração instalada e
 
 `admin` e `production_manager` alteram dados técnicos; `production_operator` possui consulta operacional. Todas as mutações exigem CSRF e preservam a autenticação MFA existente. Consulte `docs/printer-technical-specifications.md`, `docs/material-compatibility.md` e `docs/production-api.md`.
 
+### Monitoramento Bambu Lab
+
+Aplique a migration 27, configure `BAMBU_LAN_ENCRYPTION_KEY` e cadastre a conexão LAN no painel. Inicie com `cd backend` e `go run ./cmd/printer-monitor`. A integração exige IP privado e pinagem SHA-256 do certificado e não publica comandos. Consulte `docs/bambulab-integration.md` e `docs/printer-monitoring.md`.
+

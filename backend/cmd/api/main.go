@@ -25,6 +25,7 @@ import (
 	shippingapp "example.com/loja-3d/backend/internal/application/shipping"
 	apihttp "example.com/loja-3d/backend/internal/http"
 	"example.com/loja-3d/backend/internal/http/handlers"
+	"example.com/loja-3d/backend/internal/infrastructure/bambulab"
 	"example.com/loja-3d/backend/internal/infrastructure/mail"
 	mercadopago "example.com/loja-3d/backend/internal/infrastructure/payment/mercadopago"
 	"example.com/loja-3d/backend/internal/infrastructure/postgres"
@@ -195,6 +196,19 @@ func main() {
 	productionService.SetPlanningRepository(productionRepository)
 	productionService.SetOptimizationRepository(productionRepository)
 	productionService.SetTechnicalRepository(productionRepository)
+	bambuClient := bambulab.NewClient()
+	var bambuCipher *bambulab.Cipher
+	if key := strings.TrimSpace(os.Getenv("BAMBU_LAN_ENCRYPTION_KEY")); key != "" {
+		version, parseKeyErr := strconv.ParseInt(envOrDefault("BAMBU_LAN_KEY_VERSION", "1"), 10, 16)
+		if parseKeyErr == nil {
+			bambuCipher, _ = bambulab.NewCipher(key, int16(version))
+		}
+	}
+	if bambuCipher != nil {
+		productionService.SetMonitoring(productionRepository, bambuClient, bambuCipher)
+	} else {
+		productionService.SetMonitoring(productionRepository, bambuClient, nil)
+	}
 	productionHandler := handlers.NewProductionHandler(productionService, adminService)
 
 	baseHandler := apihttp.NewHandlerCompleteWithProduction(frontendOrigin, databaseHealth, catalogHandler, quoteHandler, adminHandler, customerHandler, shippingHandler, paymentHandler, productionHandler, editorialHandler)

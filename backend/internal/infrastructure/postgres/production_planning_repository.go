@@ -108,10 +108,11 @@ func nullableUUID(value string) any {
 }
 
 func (r *ProductionRepository) PrinterCapacities(ctx context.Context, now time.Time) ([]app.PrinterCapacityView, error) {
-	rows, err := r.pool.Query(ctx, `SELECT p.id,p.code,p.name,p.manufacturer,p.model,p.status,
+	rows, err := r.pool.Query(ctx, `SELECT p.id,p.code,p.name,p.manufacturer,p.model,CASE WHEN telemetry.last_seen_at>=now()-interval '45 seconds' AND telemetry.connection_state='online' AND telemetry.printer_state IN ('printing','heating','paused') THEN 'busy' WHEN telemetry.last_seen_at>=now()-interval '45 seconds' AND telemetry.connection_state='online' AND telemetry.printer_state IN ('idle','finished') THEN 'available' WHEN telemetry.last_seen_at>=now()-interval '45 seconds' AND telemetry.connection_state IN ('offline','error') THEN 'offline' ELSE p.status END,
 	 coalesce(work.assigned_jobs,0),coalesce(work.active_runs,0),coalesce(work.known_minutes,0),
 	 coalesce(maintenance.events,0),maintenance.last_at
 FROM printers p
+LEFT JOIN printer_current_telemetry telemetry ON telemetry.printer_id=p.id
 LEFT JOIN LATERAL (
  SELECT count(DISTINCT production_job_id) FILTER (WHERE status NOT IN ('completed','failed','cancelled'))::int assigned_jobs,
         count(*) FILTER (WHERE status IN ('preparing','printing','post_processing','quality_check'))::int active_runs,

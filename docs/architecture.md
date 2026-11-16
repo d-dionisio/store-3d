@@ -545,3 +545,10 @@ Ainda não foram implementados:
 - Compatibilidade é uma função de domínio explicável com quatro estados. O motor 10.6 reutiliza a mesma semântica e continua somente leitura e sujeito à decisão humana.
 - A migration 26 é aditiva e reversível, sem backfill técnico inventado. Procedimentos estão em `docs/printer-technical-specifications.md` e `docs/material-compatibility.md`.
 
+## Etapa 10.8 — monitoramento Bambu Lab
+
+- `PrinterProvider` desacopla transporte e aplicação. O adaptador MQTTs LAN é experimental, somente leitura e não publica comandos.
+- A migration 27 separa configuração cifrada, snapshot atual, eventos e trabalhos observados.
+- `cmd/printer-monitor` controla concorrência, reconexão, retenção e shutdown.
+- Planejamento e otimização usam somente telemetria recente e nunca alteram jobs, runs ou pedidos.
+

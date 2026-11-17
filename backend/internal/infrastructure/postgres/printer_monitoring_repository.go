@@ -32,12 +32,13 @@ func (r *ProductionRepository) GetMonitoringConfig(ctx context.Context, id strin
 func (r *ProductionRepository) GetTelemetry(ctx context.Context, id string) (domain.PrinterTelemetry, error) {
 	var t domain.PrinterTelemetry
 	var state string
-	err := r.pool.QueryRow(ctx, `SELECT printer_id,connection_state,printer_state,progress_percent::float8,nozzle_temperature_c::float8,bed_temperature_c::float8,speed_level,coalesce(observed_job_name,''),elapsed_seconds,coalesce(error_code,''),last_seen_at,payload_observed_at FROM printer_current_telemetry WHERE printer_id=$1`, id).Scan(&t.PrinterID, &t.Connection, &state, &t.ProgressPercent, &t.NozzleTemperatureC, &t.BedTemperatureC, &t.SpeedLevel, &t.ObservedJobName, &t.ElapsedSeconds, &t.ErrorCode, &t.LastSeenAt, &t.PayloadObservedAt)
+	err := r.pool.QueryRow(ctx, `SELECT t.printer_id,t.connection_state,t.printer_state,t.progress_percent::float8,t.nozzle_temperature_c::float8,t.bed_temperature_c::float8,t.speed_level,coalesce(t.observed_job_name,''),t.elapsed_seconds,coalesce(t.error_code,''),t.last_seen_at,t.payload_observed_at,p.status FROM printer_current_telemetry t JOIN printers p ON p.id=t.printer_id WHERE t.printer_id=$1`, id).Scan(&t.PrinterID, &t.Connection, &state, &t.ProgressPercent, &t.NozzleTemperatureC, &t.BedTemperatureC, &t.SpeedLevel, &t.ObservedJobName, &t.ElapsedSeconds, &t.ErrorCode, &t.LastSeenAt, &t.PayloadObservedAt, &t.OperationalStatus)
 	t.State = domain.ObservedPrinterState(state)
 	if errors.Is(err, pgx.ErrNoRows) {
 		t.PrinterID = id
 		t.Connection = domain.ConnectionUnknown
 		t.State = "unknown"
+		_ = r.pool.QueryRow(ctx, `SELECT status FROM printers WHERE id=$1`, id).Scan(&t.OperationalStatus)
 		return t, nil
 	}
 	return t, productionError(err)

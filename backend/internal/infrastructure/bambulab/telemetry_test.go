@@ -33,3 +33,28 @@ func TestCredentialCipherDoesNotExposeSecret(t *testing.T) {
 		t.Fatal("cipher roundtrip failed")
 	}
 }
+
+func TestCredentialKeyringSupportsRotation(t *testing.T) {
+	oldKey := base64.StdEncoding.EncodeToString([]byte("01234567890123456789012345678901"))
+	newKey := base64.StdEncoding.EncodeToString([]byte("abcdefghijklmnopqrstuvwxyz123456"))
+	oldCipher, _ := NewCipher(oldKey, 1)
+	encrypted, _ := oldCipher.Encrypt([]byte("secret"))
+	keyring, err := NewKeyring(2, map[int16]string{1: oldKey, 2: newKey})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := keyring.Decrypt(encrypted, 1)
+	if err != nil || string(plain) != "secret" {
+		t.Fatalf("historical decrypt failed: %v", err)
+	}
+	rotated, err := keyring.Encrypt(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = oldCipher.Decrypt(rotated, 2); err == nil {
+		t.Fatal("old key unexpectedly decrypted rotated credential")
+	}
+	if plain, err = keyring.Decrypt(rotated, 2); err != nil || string(plain) != "secret" {
+		t.Fatal("active key decrypt failed")
+	}
+}

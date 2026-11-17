@@ -26,6 +26,7 @@ type PrinterTelemetry struct {
 	ErrorCode          string               `json:"error_code"`
 	LastSeenAt         *time.Time           `json:"last_seen_at"`
 	PayloadObservedAt  *time.Time           `json:"payload_observed_at"`
+	OperationalStatus  string               `json:"operational_status"`
 }
 
 func (t PrinterTelemetry) Fresh(now time.Time, maximumAge time.Duration) bool {
@@ -33,14 +34,20 @@ func (t PrinterTelemetry) Fresh(now time.Time, maximumAge time.Duration) bool {
 }
 
 func (t PrinterTelemetry) EffectiveAvailability(now time.Time, maximumAge time.Duration) string {
+	if t.Connection == ConnectionOffline || t.Connection == ConnectionError {
+		return "unavailable"
+	}
 	if !t.Fresh(now, maximumAge) {
 		return "unknown"
 	}
-	if t.State == "printing" || t.State == "heating" || t.State == "paused" {
+	if t.State == "printing" || t.State == "heating" || t.State == "paused" || t.State == "finished" {
 		return "busy"
 	}
-	if t.State == "idle" || t.State == "finished" {
+	if t.State == "idle" && t.OperationalStatus == "available" {
 		return "available"
+	}
+	if t.State == "failed" {
+		return "unavailable"
 	}
 	return "unknown"
 }

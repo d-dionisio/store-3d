@@ -552,3 +552,11 @@ Ainda não foram implementados:
 - `cmd/printer-monitor` controla concorrência, reconexão, retenção e shutdown.
 - Planejamento e otimização usam somente telemetria recente e nunca alteram jobs, runs ou pedidos.
 
+## Etapa 10.8.1 — confiabilidade do monitoramento
+
+- A conexão só fica pronta após autenticação TLS pinada e confirmação da assinatura do tópico de relatório.
+- Telemetria desatualizada nunca transforma uma impressora integrada em recurso disponível; `finished` aguarda confirmação física e `idle` respeita o estado operacional cadastrado.
+- Credenciais possuem keyring versionado. `cmd/bambu-key` realiza verificação, recriptografia e validação em transação, com dry-run por padrão.
+- O formulário administrativo carrega a versão atual para concorrência otimista e nunca devolve o código LAN já armazenado.
+- O protocolo permanece experimental e somente leitura; Developer Mode não é requisito nem é habilitado pela aplicação.
+

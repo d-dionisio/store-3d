@@ -28,7 +28,7 @@ func main() {
 	if err != nil {
 		version64 = 1
 	}
-	cipher, err := bambulab.NewCipher(os.Getenv("BAMBU_LAN_ENCRYPTION_KEY"), int16(version64))
+	cipher, err := bambulab.LoadKeyring(os.Getenv("BAMBU_LAN_ENCRYPTION_KEY"), int16(version64), os.Getenv("BAMBU_LAN_DECRYPTION_KEYS"))
 	if err != nil {
 		slog.Error("Bambu credential encryption is not configured")
 		os.Exit(1)

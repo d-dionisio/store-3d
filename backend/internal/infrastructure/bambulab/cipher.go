@@ -11,20 +11,33 @@ import (
 )
 
 type Cipher struct {
-	key     []byte
+	keys    map[int16][]byte
 	version int16
 }
 
 func NewCipher(encoded string, version int16) (*Cipher, error) {
-	key, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil || len(key) != 32 || version < 1 {
-		return nil, errors.New("BAMBU_LAN_ENCRYPTION_KEY must be base64 for exactly 32 bytes")
+	return NewKeyring(version, map[int16]string{version: encoded})
+}
+func NewKeyring(active int16, encoded map[int16]string) (*Cipher, error) {
+	if active < 1 {
+		return nil, errors.New("BAMBU_LAN_KEY_VERSION must be positive")
 	}
-	return &Cipher{key, version}, nil
+	keys := make(map[int16][]byte, len(encoded))
+	for version, value := range encoded {
+		key, err := base64.StdEncoding.DecodeString(value)
+		if err != nil || len(key) != 32 || version < 1 {
+			return nil, errors.New("Bambu LAN encryption keys must be base64 for exactly 32 bytes")
+		}
+		keys[version] = key
+	}
+	if _, ok := keys[active]; !ok {
+		return nil, errors.New("active Bambu LAN key is missing")
+	}
+	return &Cipher{keys: keys, version: active}, nil
 }
 func (c *Cipher) Version() int16 { return c.version }
 func (c *Cipher) Encrypt(plain []byte) ([]byte, error) {
-	block, e := aes.NewCipher(c.key)
+	block, e := aes.NewCipher(c.keys[c.version])
 	if e != nil {
 		return nil, e
 	}
@@ -39,10 +52,11 @@ func (c *Cipher) Encrypt(plain []byte) ([]byte, error) {
 	return gcm.Seal(nonce, nonce, plain, []byte("loja3d:bambulab:v"+strconv.Itoa(int(c.version)))), nil
 }
 func (c *Cipher) Decrypt(value []byte, version int16) ([]byte, error) {
-	if version != c.version {
+	key, ok := c.keys[version]
+	if !ok {
 		return nil, errors.New("unsupported Bambu credential key version")
 	}
-	block, e := aes.NewCipher(c.key)
+	block, e := aes.NewCipher(key)
 	if e != nil {
 		return nil, e
 	}

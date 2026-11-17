@@ -4,7 +4,9 @@
 
 O estado atual é sobrescrito em `printer_current_telemetry`; temperaturas não formam uma série infinita. Eventos de conexão são deduplicados e retidos por 30 dias. Trabalhos observados são agregados sem criar ou alterar jobs/runs.
 
-Telemetria vence em 45 segundos. Depois disso, a interface mostra estado desatualizado e o planejamento não a trata como disponibilidade real. Estado observado, operacional e estimado permanecem separados.
+Telemetria vence em 45 segundos. Depois disso, a interface mostra estado desatualizado e o planejamento não a trata como disponibilidade real. `printing`, `heating`, `paused` e `finished` permanecem ocupados; `finished` exige liberação física pelo operador. `idle` só é disponível quando o cadastro operacional também está `available`. `error` e `offline` são indisponíveis. Estado observado, operacional e estimado permanecem separados.
 
 Quando presentes, são lidos estado, progresso, temperaturas, velocidade, nome do trabalho e erro. Campos desconhecidos são ignorados; ausentes permanecem nulos. O protocolo de payload não é uma API pública estável da fabricante.
+
+O cliente confirma a assinatura QoS 1 antes de considerar a conexão pronta. Payloads parciais não apagam o último estado conhecido, duplicatas são toleradas e nenhuma mensagem é publicada em tópicos da impressora.
 

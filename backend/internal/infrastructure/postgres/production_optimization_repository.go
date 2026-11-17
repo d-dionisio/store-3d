@@ -56,7 +56,7 @@ ORDER BY pj.priority DESC,pj.due_at NULLS LAST,pj.created_at,pj.id`, now)
 		return result, err
 	}
 	printerRows, err := r.pool.Query(ctx, `
-SELECT p.id,p.name,p.model,CASE WHEN telemetry.last_seen_at>=now()-interval '45 seconds' AND telemetry.connection_state='online' AND telemetry.printer_state IN ('printing','heating','paused') THEN 'busy' WHEN telemetry.last_seen_at>=now()-interval '45 seconds' AND telemetry.connection_state='online' AND telemetry.printer_state IN ('idle','finished') THEN 'available' WHEN telemetry.last_seen_at>=now()-interval '45 seconds' AND telemetry.connection_state IN ('offline','error') THEN 'offline' ELSE p.status END,
+SELECT p.id,p.name,p.model,CASE WHEN telemetry.last_seen_at>=now()-interval '45 seconds' AND telemetry.connection_state='online' AND telemetry.printer_state IN ('printing','heating','paused','finished') THEN 'busy' WHEN telemetry.last_seen_at>=now()-interval '45 seconds' AND telemetry.connection_state='online' AND telemetry.printer_state='idle' AND p.status='available' THEN 'available' WHEN integration.printer_id IS NOT NULL THEN 'offline' ELSE p.status END,
        least(p.build_width_mm,coalesce(spec.max_width_mm,p.build_width_mm)),least(p.build_depth_mm,coalesce(spec.max_depth_mm,p.build_depth_mm)),least(p.build_height_mm,coalesce(spec.max_height_mm,p.build_height_mm)),
        coalesce(load.known_minutes,0),coalesce(installed.material_id::text,active.material_id::text,''),coalesce(installed.color_id::text,active.color_id::text,''),
        spec.max_hotend_temp_c,spec.max_bed_temp_c,config.installed_nozzle_microns,spec.enclosed_chamber,
@@ -64,6 +64,7 @@ SELECT p.id,p.name,p.model,CASE WHEN telemetry.last_seen_at>=now()-interval '45 
        coalesce(materials.ids,ARRAY[]::text[]),coalesce(nozzles.diameters,ARRAY[]::integer[])
 FROM printers p
 LEFT JOIN printer_current_telemetry telemetry ON telemetry.printer_id=p.id
+LEFT JOIN printer_integrations integration ON integration.printer_id=p.id AND integration.enabled
 LEFT JOIN printer_technical_specs spec ON spec.printer_id=p.id AND spec.status IN ('draft','verified')
 LEFT JOIN printer_operational_configs config ON config.printer_id=p.id
 LEFT JOIN LATERAL (SELECT array_agg(material_id::text ORDER BY material_id) ids FROM printer_supported_materials WHERE printer_spec_id=spec.id) materials ON true

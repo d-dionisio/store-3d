@@ -201,7 +201,7 @@ func main() {
 	if key := strings.TrimSpace(os.Getenv("BAMBU_LAN_ENCRYPTION_KEY")); key != "" {
 		version, parseKeyErr := strconv.ParseInt(envOrDefault("BAMBU_LAN_KEY_VERSION", "1"), 10, 16)
 		if parseKeyErr == nil {
-			bambuCipher, _ = bambulab.NewCipher(key, int16(version))
+			bambuCipher, _ = bambulab.LoadKeyring(key, int16(version), os.Getenv("BAMBU_LAN_DECRYPTION_KEYS"))
 		}
 	}
 	if bambuCipher != nil {

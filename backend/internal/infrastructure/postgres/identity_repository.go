@@ -176,12 +176,39 @@ func (r *IdentityRepository) UpdatePassword(ctx context.Context, kind, id, hash 
 	return e
 }
 func (r *IdentityRepository) RecordFailure(ctx context.Context, kind, email, ip string) error {
-	if kind == "admin" {
-		_, e := r.pool.Exec(ctx, `UPDATE admin_users SET failed_login_attempts=failed_login_attempts+1,locked_until=CASE WHEN failed_login_attempts+1>=5 THEN now()+least(interval '30 minutes',interval '1 minute'*power(2,least(failed_login_attempts-4,4))) ELSE locked_until END WHERE lower(email)=lower($1)`, email)
+	tx, e := r.pool.Begin(ctx)
+	if e != nil {
 		return e
 	}
-	_, e := r.pool.Exec(ctx, `UPDATE users SET failed_login_attempts=failed_login_attempts+1,locked_until=CASE WHEN failed_login_attempts+1>=5 THEN now()+least(interval '30 minutes',interval '1 minute'*power(2,least(failed_login_attempts-4,4))) ELSE locked_until END WHERE lower(email)=lower($1)`, email)
-	return e
+	defer tx.Rollback(ctx)
+	var actorID string
+	var actorType, table, event string
+	switch kind {
+	case "admin":
+		actorType, table, event = "admin", "admin_users", "admin.login.password"
+	case "customer":
+		actorType, table, event = "customer", "users", "customer.login.password"
+	default:
+		return app.ErrInvalid
+	}
+	query := `UPDATE ` + table + ` SET failed_login_attempts=failed_login_attempts+1,locked_until=CASE WHEN failed_login_attempts+1>=5 THEN now()+least(interval '30 minutes',interval '1 minute'*power(2,least(failed_login_attempts-4,4))) ELSE locked_until END WHERE lower(email)=lower($1) RETURNING id::text`
+	e = tx.QueryRow(ctx, query, email).Scan(&actorID)
+	if errors.Is(e, pgx.ErrNoRows) {
+		actorType, actorID = "anonymous", ""
+	} else if e != nil {
+		return e
+	}
+	var adminID, userID *string
+	if actorID != "" && actorType == "admin" {
+		adminID = &actorID
+	} else if actorID != "" && actorType == "customer" {
+		userID = &actorID
+	}
+	_, e = tx.Exec(ctx, `INSERT INTO security_events(actor_type,admin_user_id,user_id,event_type,outcome,ip_address) VALUES($1,$2,$3,$4,'denied',nullif($5,'')::inet)`, actorType, adminID, userID, event, ip)
+	if e != nil {
+		return e
+	}
+	return tx.Commit(ctx)
 }
 func (r *IdentityRepository) UpsertPendingFactor(ctx context.Context, kind, id string, ciphertext []byte, version int16) (app.Factor, error) {
 	var f app.Factor
@@ -209,8 +236,37 @@ func (r *IdentityRepository) CreateChallenge(ctx context.Context, kind, id, purp
 	if kind == "admin" {
 		column = "admin_user_id"
 	}
-	_, e := r.pool.Exec(ctx, `INSERT INTO auth_challenges(`+column+`,purpose,token_hash,ip_address,user_agent,expires_at) VALUES($1,$2,$3,nullif($4,'')::inet,left($5,500),$6)`, id, purpose, hash, ip, ua, expires)
-	return e
+	tx, e := r.pool.Begin(ctx)
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback(ctx)
+	if _, e = tx.Exec(ctx, `INSERT INTO auth_challenges(`+column+`,purpose,token_hash,ip_address,user_agent,expires_at) VALUES($1,$2,$3,nullif($4,'')::inet,left($5,500),$6)`, id, purpose, hash, ip, ua, expires); e != nil {
+		return e
+	}
+	if kind == "admin" || kind == "customer" {
+		var adminID, userID *string
+		if kind == "admin" {
+			adminID = &id
+		} else {
+			userID = &id
+		}
+		if _, e = tx.Exec(ctx, `INSERT INTO security_events(actor_type,admin_user_id,user_id,event_type,outcome,ip_address) VALUES($1,$2,$3,$4,'success',nullif($5,'')::inet)`, kind, adminID, userID, kind+".mfa.challenge", ip); e != nil {
+			return e
+		}
+	}
+	return tx.Commit(ctx)
+}
+
+func insertIdentitySecurityEvent(ctx context.Context, tx pgx.Tx, kind, id, event, outcome, ip string) error {
+	var adminID, userID *string
+	if kind == "admin" {
+		adminID = &id
+	} else if kind == "customer" {
+		userID = &id
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO security_events(actor_type,admin_user_id,user_id,event_type,outcome,ip_address) VALUES($1,$2,$3,$4,$5,nullif($6,'')::inet)`, kind, adminID, userID, event, outcome, ip)
+	return err
 }
 func (r *IdentityRepository) GetChallenge(ctx context.Context, hash string) (app.Challenge, error) {
 	var c app.Challenge
@@ -305,6 +361,10 @@ func (r *IdentityRepository) EnableFactorAndSession(ctx context.Context, challen
 	if e != nil {
 		return s, e
 	}
+	event := kind + ".mfa.enrollment"
+	if e = insertIdentitySecurityEvent(ctx, tx, kind, id, event, "success", ip); e != nil {
+		return app.Session{}, e
+	}
 	return s, tx.Commit(ctx)
 }
 func (r *IdentityRepository) CompleteMFAAndSession(ctx context.Context, challengeHash string, counter *int64, recoveryHash, tokenHash, csrfHash, ip, ua string, expires time.Time) (app.Session, error) {
@@ -350,6 +410,13 @@ func (r *IdentityRepository) CompleteMFAAndSession(ctx context.Context, challeng
 	s, e := createIdentitySession(ctx, tx, kind, id, tokenHash, csrfHash, ip, ua, expires)
 	if e != nil {
 		return s, e
+	}
+	event := kind + ".mfa.login"
+	if purpose == kind+"_strong_reauth" {
+		event = kind + ".mfa.reauth"
+	}
+	if e = insertIdentitySecurityEvent(ctx, tx, kind, id, event, "success", ip); e != nil {
+		return app.Session{}, e
 	}
 	return s, tx.Commit(ctx)
 }
@@ -429,12 +496,55 @@ func (r *IdentityRepository) SecurityEvent(ctx context.Context, kind string, id 
 	return e
 }
 
+// lockActiveReauthSession follows the same identity-then-session lock order as
+// administrative deactivation/session revocation, avoiding lock inversion.
+func lockActiveReauthSession(ctx context.Context, tx pgx.Tx, kind, identityID, sessionID string) error {
+	var status string
+	switch kind {
+	case "admin":
+		if err := tx.QueryRow(ctx, `SELECT status FROM admin_users WHERE id=$1 FOR UPDATE`, identityID).Scan(&status); err != nil {
+			return noRows(err)
+		}
+		if status != "active" {
+			return app.ErrUnauthorized
+		}
+		var valid bool
+		err := tx.QueryRow(ctx, `SELECT true FROM admin_sessions WHERE id=$1 AND admin_user_id=$2
+			AND revoked_at IS NULL AND expires_at>now() AND authentication_level='mfa' FOR UPDATE`, sessionID, identityID).Scan(&valid)
+		return noRows(err)
+	case "customer":
+		if err := tx.QueryRow(ctx, `SELECT status FROM users WHERE id=$1 FOR UPDATE`, identityID).Scan(&status); err != nil {
+			return noRows(err)
+		}
+		if status != "active" {
+			return app.ErrUnauthorized
+		}
+		var valid bool
+		err := tx.QueryRow(ctx, `SELECT true FROM customer_sessions WHERE id=$1 AND user_id=$2
+			AND revoked_at IS NULL AND expires_at>now() FOR UPDATE`, sessionID, identityID).Scan(&valid)
+		return noRows(err)
+	default:
+		return app.ErrUnauthorized
+	}
+}
+
 func (r *IdentityRepository) CreateReauthEvidence(ctx context.Context, kind, id, sessionID string, counter *int64, recoveryHash, tokenHash string, expires time.Time) error {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	// Bind issuance to a live session owned by the authenticated identity. Lock
+	// in the identity-then-session order before using a TOTP/recovery factor.
+	if err = lockActiveReauthSession(ctx, tx, kind, id, sessionID); err != nil {
+		return err
+	}
+	// The application verifies the TOTP/recovery proof; keep the repository
+	// boundary fail-closed too, so admin evidence cannot be issued without the
+	// proof representation that is consumed atomically below.
+	if kind == "admin" && ((counter == nil) == (recoveryHash == "")) {
+		return app.ErrUnauthorized
+	}
 	if counter != nil || recoveryHash != "" {
 		var factorID string
 		column := "user_id"
@@ -470,15 +580,39 @@ func (r *IdentityRepository) CreateReauthEvidence(ctx context.Context, kind, id,
 }
 
 func (r *IdentityRepository) ConsumeReauthEvidence(ctx context.Context, kind, sessionID, tokenHash string) error {
-	column := "customer_session_id"
-	if kind == "admin" {
-		column = "admin_session_id"
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
 	}
-	tag, err := r.pool.Exec(ctx, `UPDATE auth_reauthentication_evidence SET consumed_at=now() WHERE token_hash=$1 AND `+column+`=$2 AND consumed_at IS NULL AND expires_at>now()`, tokenHash, sessionID)
-	if err != nil || tag.RowsAffected() != 1 {
+	defer tx.Rollback(ctx)
+	var column string
+	var identityID string
+	switch kind {
+	case "admin":
+		column = "admin_session_id"
+		err = tx.QueryRow(ctx, `SELECT admin_user_id FROM admin_sessions WHERE id=$1`, sessionID).Scan(&identityID)
+	case "customer":
+		column = "customer_session_id"
+		err = tx.QueryRow(ctx, `SELECT user_id FROM customer_sessions WHERE id=$1`, sessionID).Scan(&identityID)
+	default:
 		return app.ErrUnauthorized
 	}
-	return nil
+	if err != nil {
+		return noRows(err)
+	}
+	if err = lockActiveReauthSession(ctx, tx, kind, identityID, sessionID); err != nil {
+		return err
+	}
+	// column is selected exclusively from the fixed kind switch above.
+	tag, err := tx.Exec(ctx, `UPDATE auth_reauthentication_evidence SET consumed_at=now()
+		WHERE token_hash=$1 AND `+column+`=$2 AND consumed_at IS NULL AND expires_at>now()`, tokenHash, sessionID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return app.ErrUnauthorized
+	}
+	return tx.Commit(ctx)
 }
 
 func (r *IdentityRepository) AllowRateLimit(ctx context.Context, scope, subjectHash string, limit int, window time.Duration) (bool, error) {

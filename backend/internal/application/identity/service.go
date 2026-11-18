@@ -295,7 +295,12 @@ func (s *Service) StartLogin(ctx context.Context, kind, email, password, ip, ua 
 		}
 	}
 	factor, e := s.repo.GetFactor(ctx, kind, identity.ID)
-	if e != nil || !factor.Enabled {
+	if e != nil && !errors.Is(e, ErrUnauthorized) {
+		// Only a missing factor may enter enrollment (or password-only customer
+		// login). Infrastructure failures must fail closed, not reset MFA state.
+		return LoginResult{}, ErrUnavailable
+	}
+	if errors.Is(e, ErrUnauthorized) || !factor.Enabled {
 		if kind == "customer" {
 			return s.passwordSession(ctx, identity, ip, ua)
 		}
@@ -354,6 +359,9 @@ func (s *Service) CompleteMFA(ctx context.Context, raw, code, recovery, ip, ua s
 	}
 	factor, e := s.repo.GetFactor(ctx, challenge.Kind, challenge.IdentityID)
 	if e != nil {
+		if !errors.Is(e, ErrUnauthorized) {
+			return CompleteResult{}, ErrUnavailable
+		}
 		return CompleteResult{}, ErrUnauthorized
 	}
 	secretBytes, e := s.cipher.Decrypt(factor.Ciphertext, factor.KeyVersion)
@@ -364,6 +372,9 @@ func (s *Service) CompleteMFA(ctx context.Context, raw, code, recovery, ip, ua s
 	if recovery == "" {
 		value, ok := security.ValidateTOTP(string(secretBytes), code, s.now(), factor.LastCounter)
 		if !ok {
+			if challenge.Kind == "admin" {
+				_ = s.repo.SecurityEvent(ctx, "admin", &challenge.IdentityID, "admin.mfa.login", "denied", ip)
+			}
 			return CompleteResult{}, ErrUnauthorized
 		}
 		counter = &value
@@ -400,6 +411,9 @@ func (s *Service) CompleteMFA(ctx context.Context, raw, code, recovery, ip, ua s
 		session, e = s.repo.CompleteMFAAndSession(ctx, security.TokenHash(raw), counter, recoveryHash, sessionHash, csrfHash, ip, ua, expires)
 	}
 	if e != nil {
+		if challenge.Kind == "admin" {
+			_ = s.repo.SecurityEvent(ctx, "admin", &challenge.IdentityID, "admin.mfa.login", "failure", ip)
+		}
 		return CompleteResult{}, ErrUnauthorized
 	}
 	if len(codes) > 0 {

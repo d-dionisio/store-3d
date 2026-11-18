@@ -90,7 +90,7 @@ func TestProductionCostsPostgreSQL(t *testing.T) {
 		if _, createErr := tx.Exec(ctx, fmt.Sprintf(`CREATE FUNCTION public.%s() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test audit sink failure' USING ERRCODE='23514'; END $$`, functionName)); createErr != nil {
 			t.Fatal("create scoped audit failure function:", createErr)
 		}
-		if _, createErr := tx.Exec(ctx, fmt.Sprintf(`CREATE TRIGGER %s BEFORE INSERT ON admin_audit_events FOR EACH ROW WHEN (NEW.action LIKE 'production.cost.%%') EXECUTE FUNCTION public.%s()`, triggerName, functionName)); createErr != nil {
+		if _, createErr := tx.Exec(ctx, fmt.Sprintf(`CREATE TRIGGER %s BEFORE INSERT ON admin_audit_events FOR EACH ROW WHEN (NEW.action IN ('production.cost_profile.save','production.cost_snapshot.estimate','production.cost_snapshot.actual')) EXECUTE FUNCTION public.%s()`, triggerName, functionName)); createErr != nil {
 			t.Fatal("create scoped audit failure trigger:", createErr)
 		}
 		return triggerName, functionName

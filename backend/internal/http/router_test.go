@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	apihttp "example.com/loja-3d/backend/internal/http"
+	"example.com/loja-3d/backend/internal/http/handlers"
 )
 
 type readinessStub struct{ err error }
@@ -46,6 +47,22 @@ func TestHealthEndpoint(t *testing.T) {
 
 	if body.Status != "ok" || body.Service != "loja-3d-api" {
 		t.Errorf("unexpected response body: %+v", body)
+	}
+}
+
+func TestManufacturingCostRoutesAreRegisteredAndProtected(t *testing.T) {
+	handler := apihttp.NewHandlerCompleteWithProduction("http://localhost:3000", readinessStub{}, nil, nil, nil, nil, nil, nil, handlers.NewProductionHandler(nil, nil))
+	for _, route := range []struct{ method, path string }{
+		{http.MethodGet, "/api/v1/admin/production/printers/not-a-uuid/cost-profile"},
+		{http.MethodPost, "/api/v1/admin/production/runs/not-a-uuid/costs/actual"},
+		{http.MethodGet, "/api/v1/admin/production/analytics/cost-profitability/printers"},
+	} {
+		request := httptest.NewRequest(route.method, route.path, nil)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s status=%d body=%s", route.method, route.path, response.Code, response.Body.String())
+		}
 	}
 }
 

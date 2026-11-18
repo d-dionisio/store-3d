@@ -560,3 +560,26 @@ Ainda não foram implementados:
 - O formulário administrativo carrega a versão atual para concorrência otimista e nunca devolve o código LAN já armazenado.
 - O protocolo permanece experimental e somente leitura; Developer Mode não é requisito nem é habilitado pela aplicação.
 
+## Etapa 10.9 — produtividade e histórico de impressões
+
+- A leitura usa `production_runs`, snapshots de `production_run_materials`, inspeções, eventos, pedidos e telemetria já existentes; não há nova fonte de verdade nem migration.
+- A API agrega no PostgreSQL, pagina o histórico e limita rankings a 100 produtos/variantes. Filtros por nomes usam parâmetros `ILIKE`; identificadores exatos permanecem disponíveis como filtros UUID.
+- Custo utiliza as linhas de consumo com `cost_per_kg_snapshot_cents` quando existem; registros legados sem linhas usam `production_runs.material_cost_cents`. Não são somados dois snapshots potencialmente redundantes.
+- Duração e precisão usam apenas `actual_minutes > 0`; duração estimada ausente/zero não entra no denominador. Taxas de sucesso e falha consideram execuções concluídas e falhas.
+- Utilização de impressoras é `null` enquanto não houver histórico confiável de disponibilidade. Eventos de telemetria com coincidência temporal são apresentados como candidatos, nunca associados automaticamente a uma execução.
+- Leituras administrativas respeitam os papéis operacionais existentes e são auditadas; `quote_viewer` não tem acesso. O histórico não altera jobs, consumos, pedidos ou valores financeiros.
+- Contratos, filtros e limitações estão em `docs/production-api.md`.
+- Homologação 10.9.1 retomada em 2026-11-18: engine Docker 28.3.2; PostgreSQL 17.6 em `loja_3d_test`; migrations 27 (`dirty=false`). Nenhuma migration foi aplicada nesta retomada.
+- A homologação 10.9.2 aprovou a matriz PostgreSQL de analytics em transação rollback, comparação independente por SQL e sete EXPLAIN com fixture sintética de 7 runs. Os planos observaram scans sequenciais somente em tabelas pequenas e utilizaram índices existentes; nenhum índice foi adicionado.
+- A regressão Go (`go test ./...`, sem URLs para que integrações antigas com DELETE não sejam acionadas, mais o teste PostgreSQL direcionado) e `go vet` passaram. Lint, 11 arquivos/32 testes Vitest, typecheck e build frontend passaram. As fixtures foram confirmadas ausentes após rollback.
+- RBAC HTTP 401/403/200 foi exercitado com sessão stub após resolução do papel; o fluxo real MFA/sessão não foi simulado. Benchmarks sob volume alto e comparação de contagens comerciais não foram realizados. Evidências e limites: `docs/evidence/production-analytics-homologation.md`.
+
+## Etapa 10.10 — custos completos de fabricação
+
+- Perfis de custo por impressora são versões append-only; um ponteiro separado representa a configuração vigente. Snapshots estimate/actual de cada execução referenciam a versão usada e também são append-only.
+- `production_run_materials` continua fonte histórica para massa, desperdício e custo/preço por bobina; nenhuma consulta de custo realizado usa preço atual de `material_spools`.
+- Dinheiro é centavos BIGINT e o domínio calcula com aritmética inteira/racional; energia em milliWh, potência em mW, tempo em segundos e massa em gramas. Não são presumidos valores da Bambu Lab A1.
+- Pedidos e snapshots comerciais são somente leitura. Receita é atribuída a uma única execução concluída por job para não contar venda novamente em reimpressões.
+- Configuração e rentabilidade usam roles `admin`/`production_manager`, sessão administrativa, CSRF, reautenticação forte existente e auditoria. Nenhuma autenticação paralela.
+- Migration 28 adiciona perfis e snapshots. Teste PostgreSQL só permite `loja_3d_test` loopback e rollback; a homologação real permanece pendente se `TEST_DATABASE_URL` não estiver fornecida.
+

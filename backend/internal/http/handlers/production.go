@@ -7,13 +7,24 @@ import (
 	"strconv"
 
 	adminapp "example.com/loja-3d/backend/internal/application/admin"
+	identityapp "example.com/loja-3d/backend/internal/application/identity"
 	app "example.com/loja-3d/backend/internal/application/production"
 	admindomain "example.com/loja-3d/backend/internal/domain/admin"
 )
 
 type ProductionHandler struct {
-	service *app.Service
-	admin   *adminapp.Service
+	service  *app.Service
+	admin    *adminapp.Service
+	identity *identityapp.Service
+}
+
+func (h *ProductionHandler) SetIdentityService(identity *identityapp.Service) { h.identity = identity }
+
+func (h *ProductionHandler) consumeCostReauthentication(r *http.Request, sessionID string) error {
+	if h.identity == nil {
+		return identityapp.ErrUnavailable
+	}
+	return h.identity.ConsumeReauthentication(r.Context(), "admin", sessionID, r.Header.Get("X-Reauthentication-Token"), adminIP(r))
 }
 
 func NewProductionHandler(service *app.Service, admin *adminapp.Service) *ProductionHandler {
@@ -42,6 +53,8 @@ func productionHTTPError(w http.ResponseWriter, err error) {
 		writeError(w, 404, "production_not_found", "Recurso de produção não encontrado.")
 	case errors.Is(err, app.ErrConflict):
 		writeError(w, 409, "production_conflict", "Conflito de estado, versão ou integridade da produção.")
+	case errors.Is(err, app.ErrCostDataUnavailable):
+		writeError(w, 409, "cost_data_unavailable", "Não há medições ou configurações suficientes para calcular este custo.")
 	default:
 		writeError(w, 500, "internal_error", "Falha interna.")
 	}

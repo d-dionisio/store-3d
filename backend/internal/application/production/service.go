@@ -143,6 +143,8 @@ type Service struct {
 	monitoring       MonitoringRepository
 	connectionTester PrinterProvider
 	monitoringCipher CredentialEncryptor
+	analytics        AnalyticsRepository
+	costs            CostRepository
 }
 
 func New(repo Repository) *Service                                       { return &Service{repo: repo} }

@@ -105,3 +105,39 @@ Todos os caminhos têm o prefixo `/api/v1/admin/production`. Atualizações rece
 
 Configuração/teste exigem `admin` ou `production_manager`, MFA e CSRF. Consultas permitem `production_operator`. A credencial nunca aparece na resposta.
 
+## Inteligência de produtividade e histórico (Etapa 10.9)
+
+Rotas de leitura protegidas pela sessão administrativa existente, disponíveis para `admin`, `production_manager` e `production_operator`; `quote_viewer` e usuários anônimos não têm acesso. Leituras são auditadas.
+
+- `GET /api/v1/admin/production/history`: execuções paginadas. Parâmetros: `from`, `to` (datas inclusivas), `printer_id`, `product_id`, `material_id`, `product`, `material`, `status`, `quality`, `page`, `limit` (máximo 100).
+- `GET /api/v1/admin/production/history/{runID}`: execução, linhas de consumo e custo histórico, inspeções, eventos append-only e candidatos temporais de telemetria.
+- `GET /api/v1/admin/production/analytics/productivity`: resumo e série diária.
+- `GET /api/v1/admin/production/analytics/printers`: agregados por impressora.
+- `GET /api/v1/admin/production/analytics/materials`: gramas consumidos/desperdiçados e custo por material.
+- `GET /api/v1/admin/production/analytics/costs`: resumo de custos e série por dia.
+- `GET /api/v1/admin/production/analytics/time-accuracy`: medianas estimada/real e desvio por produto/variante.
+
+Filtros textuais `product` e `material` são buscas parciais, parametrizadas e limitadas a 100 caracteres; os filtros `*_id` são identificadores exatos. `actual_minutes` é mostrado como duração quando registrado, mas médias, medianas e precisão incluem apenas durações positivas. Custos usam os snapshots de linhas de consumo; runs legados sem linhas usam `production_runs.material_cost_cents`. Não somar valores de origem dupla evita dupla contagem.
+
+Utilização de impressora é desconhecida (`null`) sem registro confiável do tempo disponível. Telemetria que apenas coincide com o intervalo de uma execução aparece como `time_window_candidate`; não é tratada como prova nem associada automaticamente. Métricas não modificam pedidos, produção, estoque ou snapshots comerciais.
+
+Homologação Etapa 10.9.2 (2026-11-18): `TestProductionAnalyticsPostgreSQL` aprovado em PostgreSQL 17.6, banco isolado `loja_3d_test`, migration 27 (`dirty=false`). A cobertura inclui filtros combinados, paginação/ordenação, estados e durações incompletas, medianas pares/ímpares, custos e desperdício históricos, reimpressão, agregações sem duplicidade, alteração do preço atual de bobina e comparação contra SQL independente.
+
+`EXPLAIN (ANALYZE, BUFFERS)` foi coletado para sete consultas com fixture transacional de 7 runs. Os scans sequenciais observados foram em tabelas pequenas; não foi criado índice. Esses tempos não representam benchmark de carga. Teste HTTP RBAC valida 401/403/200 por papel com sessão de teste injetada; o fluxo real de sessão/MFA não foi simulado nem alterado. Relatório completo, métricas e ressalvas: `docs/evidence/production-analytics-homologation.md`.
+
+## Etapa 10.10 — Custos completos de fabricação
+
+Todas as rotas abaixo são administrativas. Perfis, snapshots financeiros e rentabilidade exigem `admin` ou `production_manager`; alterações exigem cookie/sessão administrativa, CSRF e token de reautenticação (`X-Reauthentication-Token`). As operações são auditadas pelo mecanismo administrativo existente.
+
+- `GET /api/v1/admin/production/printers/{printerID}/cost-profile`: configuração vigente da impressora.
+- `PUT /api/v1/admin/production/printers/{printerID}/cost-profile`: cria nova versão; exige `expected_version` igual à versão vigente (0 no primeiro cadastro). Não altera versões anteriores.
+- `GET /api/v1/admin/production/printers/{printerID}/cost-profile/history`: histórico de configurações.
+- `POST /api/v1/admin/production/runs/{runID}/costs/estimate`: cria snapshot estimado com tempo/peso planejado, perfil vigente e preço da bobina compatível mais recente. A origem do preço fica discriminada.
+- `POST /api/v1/admin/production/runs/{runID}/costs/actual`: exige execução terminal, dados registrados e `preparation_seconds`/`finishing_seconds` observados. Opcionalmente recebe `energy_milliwh`; sem medição, energia usa potência cadastrada e origem `configured_power`.
+- `GET /api/v1/admin/production/runs/{runID}/costs`: snapshots estimado/real e breakdown.
+- `GET /api/v1/admin/production/analytics/cost-profitability?from=YYYY-MM-DD&to=YYYY-MM-DD`: custos, receita, contribuição e lucro por produto.
+- `GET /api/v1/admin/production/analytics/cost-profitability/printers`: indicadores por impressora.
+- `GET /api/v1/admin/production/analytics/cost-estimate-comparison`: diferença estimado versus realizado por execução com ambos snapshots.
+
+Moeda trafega em centavos inteiros; energia em milliWh, potência em mW e duração em segundos. A margem de contribuição operacional desconta custos variáveis (material, energia, manutenção e mão de obra); depreciação integra custo total/lucro. Reimpressões acumulam custo e receita comercial é contada uma vez por job. Estimativas não inventam dados: sem profile, peso/tempo ou bobina correspondente retornam conflito de dados insuficientes. A UI Dark Tech está planejada em `/admin/producao/custos`, mas não foi construída nesta etapa.
+

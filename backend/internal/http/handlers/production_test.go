@@ -25,3 +25,19 @@ func TestProductionPlanningRequiresAdminSession(t *testing.T) {
 		t.Fatalf("status = %d", recorder.Code)
 	}
 }
+
+func TestProductionAnalyticsRequiresAdminSession(t *testing.T) {
+	handler := NewProductionHandler(nil, nil)
+	for _, path := range []string{"/api/v1/admin/production/history", "/api/v1/admin/production/analytics/productivity"} {
+		request := httptest.NewRequest("GET", path, nil)
+		response := httptest.NewRecorder()
+		if path == "/api/v1/admin/production/history" {
+			handler.ProductionHistory(response, request)
+		} else {
+			handler.ProductionAnalytics(response, request)
+		}
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("path=%s status=%d", path, response.Code)
+		}
+	}
+}

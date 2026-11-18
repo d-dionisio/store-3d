@@ -196,6 +196,8 @@ func main() {
 	productionService.SetPlanningRepository(productionRepository)
 	productionService.SetOptimizationRepository(productionRepository)
 	productionService.SetTechnicalRepository(productionRepository)
+	productionService.SetAnalyticsRepository(productionRepository)
+	productionService.SetCostRepository(postgres.NewProductionCostRepository(pool))
 	bambuClient := bambulab.NewClient()
 	var bambuCipher *bambulab.Cipher
 	if key := strings.TrimSpace(os.Getenv("BAMBU_LAN_ENCRYPTION_KEY")); key != "" {
@@ -210,6 +212,7 @@ func main() {
 		productionService.SetMonitoring(productionRepository, bambuClient, nil)
 	}
 	productionHandler := handlers.NewProductionHandler(productionService, adminService)
+	productionHandler.SetIdentityService(identityService)
 
 	baseHandler := apihttp.NewHandlerCompleteWithProduction(frontendOrigin, databaseHealth, catalogHandler, quoteHandler, adminHandler, customerHandler, shippingHandler, paymentHandler, productionHandler, editorialHandler)
 	rootHandler := http.NewServeMux()

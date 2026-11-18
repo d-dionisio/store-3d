@@ -581,5 +581,8 @@ Ainda não foram implementados:
 - Dinheiro é centavos BIGINT e o domínio calcula com aritmética inteira/racional; energia em milliWh, potência em mW, tempo em segundos e massa em gramas. Não são presumidos valores da Bambu Lab A1.
 - Pedidos e snapshots comerciais são somente leitura. Receita é atribuída a uma única execução concluída por job para não contar venda novamente em reimpressões.
 - Configuração e rentabilidade usam roles `admin`/`production_manager`, sessão administrativa, CSRF, reautenticação forte existente e auditoria. Nenhuma autenticação paralela.
-- Migration 28 adiciona perfis e snapshots. Teste PostgreSQL só permite `loja_3d_test` loopback e rollback; a homologação real permanece pendente se `TEST_DATABASE_URL` não estiver fornecida.
+- Migration 28 adiciona perfis e snapshots append-only. Homologação em `loja_3d_test` (PostgreSQL 17.6) executou up/down/up, terminou em 28 `dirty=false`; foram conferidos 57 constraints, 3 triggers e 8 índices, com zero objetos da migration após down.
+- `TestProductionCostsPostgreSQL` passou com fixture transacional rollback, cobertura de componentes financeiros, snapshots históricos, reimpressão, restrições e falhas sem resíduos. Nenhuma conexão ao banco comercial foi aberta.
+- A implementação usa lock da impressora/versão e da execução/snapshot, além da chave única por tipo de snapshot. O teste validou conflito de versão e repetição idempotente sequenciais; concorrência real entre sessões independentes permanece pendente. Falha na gravação não deixa snapshot parcial, mas run e snapshot não são criados na mesma transação de ciclo de vida.
+- A matriz de autorização em testes de aplicação/HTTP confirmou anônimo 401, quote_viewer 403, operador sem permissão gerencial e admin/production_manager autorizados. O fluxo real de MFA, CSRF, reautenticação e auditoria não foi submetido a sessão autenticada de ponta a ponta nesta homologação.
 

@@ -67,6 +67,10 @@ func TestCostConfigurationIsManagerOnlyAndVersioned(t *testing.T) {
 	if err != nil || got.Version != 1 {
 		t.Fatalf("profile=%+v err=%v", got, err)
 	}
+	got, err = service.SaveProductionCostProfile(context.Background(), admindomain.Session{Role: "admin", UserID: "root"}, "printer", input)
+	if err != nil || got.Version != 1 {
+		t.Fatalf("admin profile=%+v err=%v", got, err)
+	}
 }
 
 func TestActualCostRequiresObservedLaborTimes(t *testing.T) {

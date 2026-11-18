@@ -16,6 +16,7 @@ var ErrConflict = errors.New("conflict")
 var ErrExpired = errors.New("expired")
 var ErrRateLimited = errors.New("rate limited")
 var ErrUnavailable = errors.New("unavailable")
+var ErrEmailUnavailable = errors.New("email unavailable")
 
 type Identity struct {
 	ID, Kind, Email, FullName, Role, Status, PasswordHash string
@@ -163,7 +164,7 @@ func (s *Service) Register(ctx context.Context, name, email, password, ip string
 		e = s.mailer.SendVerification(ctx, email, link)
 	}
 	if e != nil {
-		return ErrUnavailable
+		return ErrEmailUnavailable
 	}
 	return nil
 }
@@ -212,7 +213,7 @@ func (s *Service) ResendVerification(ctx context.Context, email, ip string) erro
 		e = s.mailer.SendVerification(ctx, email, link)
 	}
 	if e != nil {
-		return ErrUnavailable
+		return ErrEmailUnavailable
 	}
 	return nil
 }
@@ -246,7 +247,7 @@ func (s *Service) RequestReset(ctx context.Context, email, ip string) error {
 		e = s.mailer.SendPasswordReset(ctx, email, link)
 	}
 	if e != nil {
-		return ErrUnavailable
+		return ErrEmailUnavailable
 	}
 	return nil
 }

@@ -141,3 +141,5 @@ Todas as rotas abaixo são administrativas. Perfis, snapshots financeiros e rent
 
 Moeda trafega em centavos inteiros; energia em milliWh, potência em mW e duração em segundos. A margem de contribuição operacional desconta custos variáveis (material, energia, manutenção e mão de obra); depreciação integra custo total/lucro. Reimpressões acumulam custo e receita comercial é contada uma vez por job. Estimativas não inventam dados: sem profile, peso/tempo ou bobina correspondente retornam conflito de dados insuficientes. A UI Dark Tech está planejada em `/admin/producao/custos`, mas não foi construída nesta etapa.
 
+Homologação PostgreSQL 10.10.1 (2026-11-18): migration 28 passou up/down/up somente em `loja_3d_test`, PostgreSQL 17.6, sempre `dirty=false`. `TestProductionCostsPostgreSQL` passou com cálculos de todos os componentes, snapshots de consumo/preço e perfil imutáveis, idempotência e rollback de falhas; fixtures em transação foram confirmadas ausentes. A cobertura simultânea com conexões independentes e validação ponta a ponta de sessão/MFA/CSRF permanecem pendentes. Detalhes e valores esperados em `docs/manufacturing-costs.md`.
+

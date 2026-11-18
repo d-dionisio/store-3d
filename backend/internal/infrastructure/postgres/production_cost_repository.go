@@ -36,7 +36,7 @@ func costRepositoryError(err error) error {
 	return err
 }
 
-const costProfileSelect = `SELECT p.id::text,p.printer_id::text,p.version,p.electricity_rate_cents_per_kwh,p.printer_power_milliwatts,p.power_measurement_note,p.machine_acquisition_cents,p.machine_useful_life_seconds,p.maintenance_rate_cents_per_hour,p.labor_rate_cents_per_hour,p.preparation_seconds,p.finishing_seconds,coalesce(p.notes,''),p.created_at FROM production_cost_profiles p `
+const costProfileSelect = `SELECT p.id::text,p.printer_id::text,p.version,p.electricity_rate_cents_per_kwh,p.printer_power_milliwatts,coalesce(p.power_measurement_note,''),p.machine_acquisition_cents,p.machine_useful_life_seconds,p.maintenance_rate_cents_per_hour,p.labor_rate_cents_per_hour,p.preparation_seconds,p.finishing_seconds,coalesce(p.notes,''),p.created_at FROM production_cost_profiles p `
 
 func scanCostProfile(row pgx.Row) (app.CostProfileView, error) {
 	var v app.CostProfileView

@@ -34,8 +34,10 @@ func identityError(w http.ResponseWriter, err error) {
 		writeQuoteJSON(w, 409, map[string]any{"error": map[string]string{"code": "conflict", "message": "Não foi possível concluir a solicitação."}})
 	case errors.Is(err, identityapp.ErrRateLimited):
 		writeQuoteJSON(w, 429, map[string]any{"error": map[string]string{"code": "rate_limited", "message": "Muitas tentativas. Aguarde."}})
-	case errors.Is(err, identityapp.ErrUnavailable):
+	case errors.Is(err, identityapp.ErrEmailUnavailable):
 		writeQuoteJSON(w, 503, map[string]any{"error": map[string]string{"code": "email_unavailable", "message": "Envio transacional indisponível."}})
+	case errors.Is(err, identityapp.ErrUnavailable):
+		writeQuoteJSON(w, 503, map[string]any{"error": map[string]string{"code": "service_unavailable", "message": "Serviço de autenticação temporariamente indisponível."}})
 	default:
 		writeQuoteJSON(w, 500, map[string]any{"error": map[string]string{"code": "internal_error", "message": "Falha interna."}})
 	}
@@ -198,7 +200,7 @@ func (h *CustomerHandler) Register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	e := h.identity.Register(r.Context(), b.FullName, b.Email, b.Password, adminIP(r))
-	if e != nil && !errors.Is(e, identityapp.ErrUnavailable) && !errors.Is(e, identityapp.ErrConflict) {
+	if e != nil && !errors.Is(e, identityapp.ErrUnavailable) && !errors.Is(e, identityapp.ErrEmailUnavailable) && !errors.Is(e, identityapp.ErrConflict) {
 		identityError(w, e)
 		return
 	}

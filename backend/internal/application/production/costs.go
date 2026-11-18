@@ -11,6 +11,12 @@ import (
 )
 
 var ErrCostDataUnavailable = errors.New("insufficient operational data to calculate manufacturing cost")
+var ErrCostAuditUnavailable = errors.New("required manufacturing-cost audit could not be persisted")
+
+type CostAuditContext struct {
+	SessionID string
+	IPAddress string
+}
 
 type CostProfileInput struct {
 	ElectricityRateCentsPerKWh  int64  `json:"electricity_rate_cents_per_kwh"`
@@ -85,11 +91,11 @@ type RunCostRequest struct {
 }
 
 type CostRepository interface {
-	SaveCostProfile(context.Context, string, CostProfileInput, string) (CostProfileView, error)
+	SaveCostProfile(context.Context, string, CostProfileInput, string, CostAuditContext) (CostProfileView, error)
 	GetCurrentCostProfile(context.Context, string) (CostProfileView, error)
 	ListCostProfileHistory(context.Context, string) ([]CostProfileView, error)
 	LoadRunCostContext(context.Context, string, string, *int64) (CostContext, error)
-	SaveRunCostSnapshot(context.Context, CostContext, domain.CostBreakdown, string) (CostSnapshotView, error)
+	SaveRunCostSnapshot(context.Context, CostContext, domain.CostBreakdown, string, CostAuditContext) (CostSnapshotView, error)
 	ListRunCostSnapshots(context.Context, string) ([]CostSnapshotView, error)
 	CostProfitability(context.Context, string, string) ([]ProductCostProfitability, error)
 	CostProfitabilityByPrinter(context.Context, string, string) ([]PrinterCostProfitability, error)
@@ -131,7 +137,11 @@ type CostEstimateComparison struct {
 
 func (s *Service) SetCostRepository(r CostRepository) { s.costs = r }
 
-func (s *Service) SaveProductionCostProfile(ctx context.Context, a admindomain.Session, printerID string, in CostProfileInput) (CostProfileView, error) {
+func (s *Service) AuthorizeProductionCostManagement(a admindomain.Session) error {
+	return require(canManage(a))
+}
+
+func (s *Service) SaveProductionCostProfile(ctx context.Context, a admindomain.Session, printerID string, in CostProfileInput, audit CostAuditContext) (CostProfileView, error) {
 	if err := require(canManage(a)); err != nil {
 		return CostProfileView{}, err
 	}
@@ -142,7 +152,7 @@ func (s *Service) SaveProductionCostProfile(ctx context.Context, a admindomain.S
 	if err := p.Validate(); err != nil {
 		return CostProfileView{}, ErrInvalid
 	}
-	return s.costs.SaveCostProfile(ctx, printerID, in, a.UserID)
+	return s.costs.SaveCostProfile(ctx, printerID, in, a.UserID, audit)
 }
 
 func (s *Service) GetProductionCostProfile(ctx context.Context, a admindomain.Session, printerID string) (CostProfileView, error) {
@@ -159,7 +169,7 @@ func (s *Service) ProductionCostProfileHistory(ctx context.Context, a admindomai
 	return s.costs.ListCostProfileHistory(ctx, printerID)
 }
 
-func (s *Service) CalculateRunCost(ctx context.Context, a admindomain.Session, runID string, request RunCostRequest) (CostSnapshotView, error) {
+func (s *Service) CalculateRunCost(ctx context.Context, a admindomain.Session, runID string, request RunCostRequest, audit CostAuditContext) (CostSnapshotView, error) {
 	if err := require(canManage(a)); err != nil {
 		return CostSnapshotView{}, err
 	}
@@ -187,7 +197,7 @@ func (s *Service) CalculateRunCost(ctx context.Context, a admindomain.Session, r
 	if err != nil {
 		return CostSnapshotView{}, ErrInvalid
 	}
-	return s.costs.SaveRunCostSnapshot(ctx, c, result, a.UserID)
+	return s.costs.SaveRunCostSnapshot(ctx, c, result, a.UserID, audit)
 }
 
 func (s *Service) GetRunCostSnapshots(ctx context.Context, a admindomain.Session, runID string) ([]CostSnapshotView, error) {

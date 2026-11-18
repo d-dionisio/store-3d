@@ -16,7 +16,7 @@ type costRepoFake struct {
 	saveErr error
 }
 
-func (f *costRepoFake) SaveCostProfile(_ context.Context, printer string, in CostProfileInput, _ string) (CostProfileView, error) {
+func (f *costRepoFake) SaveCostProfile(_ context.Context, printer string, in CostProfileInput, _ string, _ CostAuditContext) (CostProfileView, error) {
 	if f.saveErr != nil {
 		return CostProfileView{}, f.saveErr
 	}
@@ -35,7 +35,7 @@ func (f *costRepoFake) LoadRunCostContext(_ context.Context, run, kind string, _
 	c.SnapshotType = kind
 	return c, nil
 }
-func (f *costRepoFake) SaveRunCostSnapshot(_ context.Context, c CostContext, b domain.CostBreakdown, _ string) (CostSnapshotView, error) {
+func (f *costRepoFake) SaveRunCostSnapshot(_ context.Context, c CostContext, b domain.CostBreakdown, _ string, _ CostAuditContext) (CostSnapshotView, error) {
 	f.stored = b
 	return CostSnapshotView{RunID: c.RunID, CostBreakdown: b}, nil
 }
@@ -57,17 +57,17 @@ func TestCostConfigurationIsManagerOnlyAndVersioned(t *testing.T) {
 	service := New(nil)
 	service.SetCostRepository(repo)
 	input := CostProfileInput{ElectricityRateCentsPerKWh: 100, MachineUsefulLifeSeconds: 1000, ExpectedVersion: 0, PowerMeasurementNote: "medição local"}
-	if _, err := service.SaveProductionCostProfile(context.Background(), admindomain.Session{Role: "production_operator"}, "printer", input); !errors.Is(err, ErrForbidden) {
+	if _, err := service.SaveProductionCostProfile(context.Background(), admindomain.Session{Role: "production_operator"}, "printer", input, CostAuditContext{}); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("operator error=%v", err)
 	}
-	if _, err := service.SaveProductionCostProfile(context.Background(), admindomain.Session{Role: "quote_viewer"}, "printer", input); !errors.Is(err, ErrForbidden) {
+	if _, err := service.SaveProductionCostProfile(context.Background(), admindomain.Session{Role: "quote_viewer"}, "printer", input, CostAuditContext{}); !errors.Is(err, ErrForbidden) {
 		t.Fatalf("quote viewer error=%v", err)
 	}
-	got, err := service.SaveProductionCostProfile(context.Background(), admindomain.Session{Role: "production_manager", UserID: "admin"}, "printer", input)
+	got, err := service.SaveProductionCostProfile(context.Background(), admindomain.Session{Role: "production_manager", UserID: "admin"}, "printer", input, CostAuditContext{})
 	if err != nil || got.Version != 1 {
 		t.Fatalf("profile=%+v err=%v", got, err)
 	}
-	got, err = service.SaveProductionCostProfile(context.Background(), admindomain.Session{Role: "admin", UserID: "root"}, "printer", input)
+	got, err = service.SaveProductionCostProfile(context.Background(), admindomain.Session{Role: "admin", UserID: "root"}, "printer", input, CostAuditContext{})
 	if err != nil || got.Version != 1 {
 		t.Fatalf("admin profile=%+v err=%v", got, err)
 	}
@@ -78,12 +78,12 @@ func TestActualCostRequiresObservedLaborTimes(t *testing.T) {
 	repo := &costRepoFake{context: CostContext{Quantity: 1, Profile: domain.CostProfile{PrinterID: "printer", PrinterPowerMilliwatts: &power}, Input: domain.CostInput{MachineUsefulLifeSeconds: 3600, RunSeconds: 3600, LaborRateCentsHour: 3600, EnergyRateCentsKWh: 100}}}
 	service := New(nil)
 	service.SetCostRepository(repo)
-	_, err := service.CalculateRunCost(context.Background(), admindomain.Session{Role: "admin", UserID: "admin"}, "run", RunCostRequest{Kind: "actual"})
+	_, err := service.CalculateRunCost(context.Background(), admindomain.Session{Role: "admin", UserID: "admin"}, "run", RunCostRequest{Kind: "actual"}, CostAuditContext{})
 	if !errors.Is(err, ErrInvalid) {
 		t.Fatalf("missing measured labor times error=%v", err)
 	}
 	prep, finish := int64(60), int64(30)
-	got, err := service.CalculateRunCost(context.Background(), admindomain.Session{Role: "admin", UserID: "admin"}, "run", RunCostRequest{Kind: "actual", PreparationSeconds: &prep, FinishingSeconds: &finish})
+	got, err := service.CalculateRunCost(context.Background(), admindomain.Session{Role: "admin", UserID: "admin"}, "run", RunCostRequest{Kind: "actual", PreparationSeconds: &prep, FinishingSeconds: &finish}, CostAuditContext{})
 	if err != nil || got.TotalCostCents == 0 {
 		t.Fatalf("snapshot=%+v err=%v", got, err)
 	}

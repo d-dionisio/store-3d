@@ -55,6 +55,8 @@ func productionHTTPError(w http.ResponseWriter, err error) {
 		writeError(w, 409, "production_conflict", "Conflito de estado, versão ou integridade da produção.")
 	case errors.Is(err, app.ErrCostDataUnavailable):
 		writeError(w, 409, "cost_data_unavailable", "Não há medições ou configurações suficientes para calcular este custo.")
+	case errors.Is(err, app.ErrCostAuditUnavailable):
+		writeError(w, http.StatusServiceUnavailable, "audit_unavailable", "A operação não pôde ser confirmada com segurança.")
 	default:
 		writeError(w, 500, "internal_error", "Falha interna.")
 	}

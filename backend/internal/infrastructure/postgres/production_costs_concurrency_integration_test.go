@@ -80,7 +80,7 @@ func TestProductionCostsConcurrencyPostgreSQL(t *testing.T) {
 		}
 	})
 
-	for _, table := range []string{"printers", "admin_users", "production_runs", "production_cost_profiles", "production_cost_profile_current", "production_run_cost_snapshots"} {
+	for _, table := range []string{"printers", "admin_users", "admin_audit_events", "production_runs", "production_cost_profiles", "production_cost_profile_current", "production_run_cost_snapshots"} {
 		if _, err = observer.Exec(ctx, `CREATE TABLE `+schema+`.`+table+` (LIKE public.`+table+` INCLUDING ALL)`); err != nil {
 			t.Fatalf("clone %s table into disposable test schema: %v", table, err)
 		}
@@ -134,7 +134,7 @@ func TestProductionCostsConcurrencyPostgreSQL(t *testing.T) {
 	t.Logf("independent PostgreSQL backends for profile race: pidA=%d pidB=%d server=%s", pidA, pidB, serverVersion)
 
 	base := app.CostProfileInput{ElectricityRateCentsPerKWh: 110, PrinterPowerMilliwatts: ptrInt64(100000), MachineAcquisitionCents: 100000, MachineUsefulLifeSeconds: 36000000, MaintenanceRateCentsPerHour: 20, LaborRateCentsPerHour: 3000}
-	initialProfile, err := repoA.SaveCostProfile(ctx, printerID, base, adminID)
+	initialProfile, err := repoA.SaveCostProfile(ctx, printerID, base, adminID, app.CostAuditContext{})
 	if err != nil || initialProfile.Version != 1 {
 		t.Fatalf("create baseline profile before concurrent update: version=%d err=%v", initialProfile.Version, err)
 	}
@@ -157,7 +157,7 @@ func TestProductionCostsConcurrencyPostgreSQL(t *testing.T) {
 	for _, repo := range []*ProductionCostRepository{repoA, repoB} {
 		go func(repo *ProductionCostRepository) {
 			<-profileStart
-			v, saveErr := repo.SaveCostProfile(ctx, printerID, base, adminID)
+			v, saveErr := repo.SaveCostProfile(ctx, printerID, base, adminID, app.CostAuditContext{})
 			profileResults <- struct {
 				view app.CostProfileView
 				err  error
@@ -222,7 +222,7 @@ func TestProductionCostsConcurrencyPostgreSQL(t *testing.T) {
 	for _, repo := range []*ProductionCostRepository{repoA, repoB} {
 		go func(repo *ProductionCostRepository) {
 			<-snapshotStart
-			v, saveErr := repo.SaveRunCostSnapshot(ctx, costCtx, breakdown, adminID)
+			v, saveErr := repo.SaveRunCostSnapshot(ctx, costCtx, breakdown, adminID, app.CostAuditContext{})
 			snapshotResults <- struct {
 				view app.CostSnapshotView
 				err  error
@@ -258,7 +258,7 @@ func TestProductionCostsConcurrencyPostgreSQL(t *testing.T) {
 	if !errors.As(duplicateErr, &pgErr) || pgErr.Code != "23505" {
 		t.Fatalf("unique constraint did not reject second snapshot for same run/type: %v", duplicateErr)
 	}
-	if _, err = repoA.SaveCostProfile(ctx, printerID, app.CostProfileInput{ExpectedVersion: 1, ElectricityRateCentsPerKWh: 222, PrinterPowerMilliwatts: ptrInt64(100000), MachineUsefulLifeSeconds: 1000}, adminID); !errors.Is(err, app.ErrConflict) {
+	if _, err = repoA.SaveCostProfile(ctx, printerID, app.CostProfileInput{ExpectedVersion: 1, ElectricityRateCentsPerKWh: 222, PrinterPowerMilliwatts: ptrInt64(100000), MachineUsefulLifeSeconds: 1000}, adminID, app.CostAuditContext{}); !errors.Is(err, app.ErrConflict) {
 		t.Fatalf("stale profile version did not conflict: %v", err)
 	}
 	var afterStale int
@@ -273,7 +273,7 @@ func TestProductionCostsConcurrencyPostgreSQL(t *testing.T) {
 	badCtx.RunID = rollbackRunID
 	badCtx.RunVersion = 1
 	badCtx.PrinterID = "00000000-0000-4000-8000-000000000000"
-	if _, err = repoA.SaveRunCostSnapshot(ctx, badCtx, breakdown, adminID); err == nil {
+	if _, err = repoA.SaveRunCostSnapshot(ctx, badCtx, breakdown, adminID, app.CostAuditContext{}); err == nil {
 		t.Fatal("snapshot with mismatched run printer should fail")
 	}
 	var rollbackRows int

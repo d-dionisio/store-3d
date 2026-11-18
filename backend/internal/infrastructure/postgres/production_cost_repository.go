@@ -44,7 +44,7 @@ func scanCostProfile(row pgx.Row) (app.CostProfileView, error) {
 	return v, costRepositoryError(err)
 }
 
-func (r *ProductionCostRepository) SaveCostProfile(ctx context.Context, printerID string, in app.CostProfileInput, actor string) (app.CostProfileView, error) {
+func (r *ProductionCostRepository) SaveCostProfile(ctx context.Context, printerID string, in app.CostProfileInput, actor string, audit app.CostAuditContext) (app.CostProfileView, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return app.CostProfileView{}, err
@@ -74,10 +74,25 @@ func (r *ProductionCostRepository) SaveCostProfile(ctx context.Context, printerI
 	if err != nil {
 		return app.CostProfileView{}, costRepositoryError(err)
 	}
+	profile, err := scanCostProfile(tx.QueryRow(ctx, costProfileSelect+` JOIN production_cost_profile_current c ON c.profile_id=p.id WHERE p.printer_id=$1`, printerID))
+	if err != nil {
+		return app.CostProfileView{}, err
+	}
+	if err = insertCostAudit(ctx, tx, actor, audit, "production.cost_profile.save", "printer", printerID); err != nil {
+		return app.CostProfileView{}, err
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return app.CostProfileView{}, costRepositoryError(err)
 	}
-	return r.GetCurrentCostProfile(ctx, printerID)
+	return profile, nil
+}
+
+func insertCostAudit(ctx context.Context, tx pgx.Tx, actor string, audit app.CostAuditContext, action, resourceType, resourceID string) error {
+	_, err := tx.Exec(ctx, `INSERT INTO admin_audit_events(admin_user_id,session_id,action,resource_type,resource_id,outcome,ip_address,metadata) VALUES($1,nullif($2,'')::uuid,$3,$4,$5,'success',nullif($6,'')::inet,'{}'::jsonb)`, actor, audit.SessionID, action, resourceType, resourceID, audit.IPAddress)
+	if err != nil {
+		return fmt.Errorf("%w", app.ErrCostAuditUnavailable)
+	}
+	return nil
 }
 
 func (r *ProductionCostRepository) GetCurrentCostProfile(ctx context.Context, printerID string) (app.CostProfileView, error) {
@@ -210,7 +225,7 @@ func (r *ProductionCostRepository) LoadRunCostContext(ctx context.Context, runID
 	return c, nil
 }
 
-func (r *ProductionCostRepository) SaveRunCostSnapshot(ctx context.Context, c app.CostContext, b domain.CostBreakdown, actor string) (app.CostSnapshotView, error) {
+func (r *ProductionCostRepository) SaveRunCostSnapshot(ctx context.Context, c app.CostContext, b domain.CostBreakdown, actor string, audit app.CostAuditContext) (app.CostSnapshotView, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return app.CostSnapshotView{}, err
@@ -227,19 +242,17 @@ func (r *ProductionCostRepository) SaveRunCostSnapshot(ctx context.Context, c ap
 	var existingID string
 	err = tx.QueryRow(ctx, `SELECT id::text FROM production_run_cost_snapshots WHERE production_run_id=$1 AND snapshot_type=$2`, c.RunID, c.SnapshotType).Scan(&existingID)
 	if err == nil {
+		existing, scanErr := scanCostSnapshot(tx.QueryRow(ctx, costSnapshotSelect+` WHERE s.id=$1`, existingID))
+		if scanErr != nil {
+			return app.CostSnapshotView{}, scanErr
+		}
+		if err = insertCostAudit(ctx, tx, actor, audit, "production.cost_snapshot."+c.SnapshotType, "production_run", c.RunID); err != nil {
+			return app.CostSnapshotView{}, err
+		}
 		if err = tx.Commit(ctx); err != nil {
 			return app.CostSnapshotView{}, costRepositoryError(err)
 		}
-		items, listErr := r.ListRunCostSnapshots(ctx, c.RunID)
-		if listErr != nil {
-			return app.CostSnapshotView{}, listErr
-		}
-		for _, item := range items {
-			if item.ID == existingID {
-				return item, nil
-			}
-		}
-		return app.CostSnapshotView{}, app.ErrNotFound
+		return existing, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return app.CostSnapshotView{}, costRepositoryError(err)
@@ -249,19 +262,17 @@ func (r *ProductionCostRepository) SaveRunCostSnapshot(ctx context.Context, c ap
 	if err != nil {
 		return app.CostSnapshotView{}, costRepositoryError(err)
 	}
+	result, err := scanCostSnapshot(tx.QueryRow(ctx, costSnapshotSelect+` WHERE s.id=$1`, id))
+	if err != nil {
+		return app.CostSnapshotView{}, err
+	}
+	if err = insertCostAudit(ctx, tx, actor, audit, "production.cost_snapshot."+c.SnapshotType, "production_run", c.RunID); err != nil {
+		return app.CostSnapshotView{}, err
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return app.CostSnapshotView{}, costRepositoryError(err)
 	}
-	items, e := r.ListRunCostSnapshots(ctx, c.RunID)
-	if e != nil {
-		return app.CostSnapshotView{}, e
-	}
-	for _, v := range items {
-		if v.ID == id {
-			return v, nil
-		}
-	}
-	return app.CostSnapshotView{}, app.ErrNotFound
+	return result, nil
 }
 func nonEmptyJSON(v []byte) []byte {
 	if len(v) == 0 {
@@ -270,17 +281,25 @@ func nonEmptyJSON(v []byte) []byte {
 	return v
 }
 
+const costSnapshotSelect = `SELECT s.id::text,s.production_run_id::text,s.snapshot_type,s.printer_id::text,s.cost_profile_id::text,s.cost_profile_version,s.energy_source,s.energy_milliwh,s.run_seconds,s.preparation_seconds,s.finishing_seconds,s.electricity_rate_cents_per_kwh,p.machine_acquisition_cents,p.machine_useful_life_seconds,p.maintenance_rate_cents_per_hour,p.labor_rate_cents_per_hour,s.consumed_grams,s.wasted_grams,s.material_breakdown,s.material_consumed_cost_cents,s.material_waste_cost_cents,s.material_total_cost_cents,s.energy_cost_cents,s.depreciation_cost_cents,s.maintenance_cost_cents,s.preparation_cost_cents,s.finishing_cost_cents,s.labor_cost_cents,s.total_cost_cents,s.unit_cost_cents,s.revenue_snapshot_cents,s.contribution_margin_cents,s.contribution_margin_basis_points,s.profit_cents,s.profit_margin_basis_points FROM production_run_cost_snapshots s JOIN production_cost_profiles p ON p.id=s.cost_profile_id`
+
+func scanCostSnapshot(row pgx.Row) (app.CostSnapshotView, error) {
+	var v app.CostSnapshotView
+	err := row.Scan(&v.ID, &v.RunID, &v.SnapshotType, &v.PrinterID, &v.CostProfileID, &v.CostProfileVersion, &v.EnergySource, &v.EnergyMilliWh, &v.RunSeconds, &v.PreparationSeconds, &v.FinishingSeconds, &v.ElectricityRateCentsPerKWh, &v.MachineAcquisitionCents, &v.MachineUsefulLifeSeconds, &v.MaintenanceRateCentsPerHour, &v.LaborRateCentsPerHour, &v.ConsumedGrams, &v.WastedGrams, &v.MaterialBreakdown, &v.MaterialConsumedCents, &v.MaterialWasteCents, &v.MaterialTotalCents, &v.EnergyCents, &v.DepreciationCents, &v.MaintenanceCents, &v.PreparationCents, &v.FinishingCents, &v.LaborTotalCents, &v.TotalCostCents, &v.UnitCostCents, &v.RevenueCents, &v.ContributionMarginCents, &v.ContributionMarginBPS, &v.ProfitCents, &v.ProfitMarginBPS)
+	return v, costRepositoryError(err)
+}
+
 func (r *ProductionCostRepository) ListRunCostSnapshots(ctx context.Context, runID string) ([]app.CostSnapshotView, error) {
-	rows, err := r.pool.Query(ctx, `SELECT s.id::text,s.production_run_id::text,s.snapshot_type,s.printer_id::text,s.cost_profile_id::text,s.cost_profile_version,s.energy_source,s.energy_milliwh,s.run_seconds,s.preparation_seconds,s.finishing_seconds,s.electricity_rate_cents_per_kwh,p.machine_acquisition_cents,p.machine_useful_life_seconds,p.maintenance_rate_cents_per_hour,p.labor_rate_cents_per_hour,s.consumed_grams,s.wasted_grams,s.material_breakdown,s.material_consumed_cost_cents,s.material_waste_cost_cents,s.material_total_cost_cents,s.energy_cost_cents,s.depreciation_cost_cents,s.maintenance_cost_cents,s.preparation_cost_cents,s.finishing_cost_cents,s.labor_cost_cents,s.total_cost_cents,s.unit_cost_cents,s.revenue_snapshot_cents,s.contribution_margin_cents,s.contribution_margin_basis_points,s.profit_cents,s.profit_margin_basis_points FROM production_run_cost_snapshots s JOIN production_cost_profiles p ON p.id=s.cost_profile_id WHERE s.production_run_id=$1 ORDER BY s.created_at DESC`, runID)
+	rows, err := r.pool.Query(ctx, costSnapshotSelect+` WHERE s.production_run_id=$1 ORDER BY s.created_at DESC`, runID)
 	if err != nil {
 		return nil, costRepositoryError(err)
 	}
 	defer rows.Close()
 	items := []app.CostSnapshotView{}
 	for rows.Next() {
-		var v app.CostSnapshotView
-		if err = rows.Scan(&v.ID, &v.RunID, &v.SnapshotType, &v.PrinterID, &v.CostProfileID, &v.CostProfileVersion, &v.EnergySource, &v.EnergyMilliWh, &v.RunSeconds, &v.PreparationSeconds, &v.FinishingSeconds, &v.ElectricityRateCentsPerKWh, &v.MachineAcquisitionCents, &v.MachineUsefulLifeSeconds, &v.MaintenanceRateCentsPerHour, &v.LaborRateCentsPerHour, &v.ConsumedGrams, &v.WastedGrams, &v.MaterialBreakdown, &v.MaterialConsumedCents, &v.MaterialWasteCents, &v.MaterialTotalCents, &v.EnergyCents, &v.DepreciationCents, &v.MaintenanceCents, &v.PreparationCents, &v.FinishingCents, &v.LaborTotalCents, &v.TotalCostCents, &v.UnitCostCents, &v.RevenueCents, &v.ContributionMarginCents, &v.ContributionMarginBPS, &v.ProfitCents, &v.ProfitMarginBPS); err != nil {
-			return nil, err
+		v, scanErr := scanCostSnapshot(rows)
+		if scanErr != nil {
+			return nil, scanErr
 		}
 		items = append(items, v)
 	}

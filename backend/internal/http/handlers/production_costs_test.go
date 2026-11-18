@@ -7,7 +7,7 @@ import (
 )
 
 func TestProductionCostEndpointsRequireExistingAdminSession(t *testing.T) {
-	h := NewProductionHandler(nil, nil)
+	h, _, _ := newCostSecurityHandler("admin")
 	cases := []struct {
 		name    string
 		method  string

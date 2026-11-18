@@ -143,3 +143,16 @@ Moeda trafega em centavos inteiros; energia em milliWh, potência em mW e duraç
 
 Homologação PostgreSQL 10.10.1 (2026-11-18): migration 28 passou up/down/up somente em `loja_3d_test`, PostgreSQL 17.6, sempre `dirty=false`. `TestProductionCostsPostgreSQL` e `TestProductionCostsConcurrencyPostgreSQL` passaram: duas conexões independentes disputaram lock de perfil e execução, com conflito otimista, snapshot único, rollback e histórico imutável; fixtures temporárias foram removidas. Testes HTTP automatizados passaram para anônimo (401), RBAC (quote_viewer/operator 403, manager/admin 200 em GETs), CSRF inválido/ausente (403) e falha fechada quando reautenticação está ausente. Os testes HTTP usam repositórios de sessão de teste e não demonstram MFA/sessão real. A homologação ponta a ponta de sessão/MFA/reautenticação e auditoria durável segue pendente; veja `docs/evidence/manufacturing-costs-homologation.md`.
 
+Regressão Fase 4 (2026-11-18): Go `go test ./...`, `go vet ./...` e testes direcionados de custos passaram. DATABASE_URL/TEST_DATABASE_URL permaneceram ausentes, então os testes PostgreSQL opt-in foram ignorados; não houve conexão ao banco. Frontend lint, 11 arquivos/32 testes, `tsc --noEmit` e build passaram. A homologação com sessão/MFA real e auditoria durável não foi feita.
+
+Classificação consolidada por requisito (incluindo limitações de sessão real, auditoria e inspeção visual): `docs/evidence/manufacturing-costs-final-checklist.md`. Não tratar testes de handler com sessão injetada como prova de autenticação/MFA ponta a ponta.
+
+### Auditoria do motor de custos — Etapa 10.10.2.1
+
+- Leituras de perfil, histórico, snapshots e relatórios registram ação e resultado; se a auditoria falhar, o handler não devolve o conteúdo consultado e responde `503 audit_unavailable` com mensagem genérica.
+- `PUT` de perfil e `POST` de snapshots gravam o evento `success` atomicamente com a operação. Se o insert de auditoria falha, a transação inteira é revertida. Uma chamada idempotente de snapshot também recebe seu evento de sucesso, sem criar outro snapshot.
+- Recusas usam eventos fixos `production.cost.security.session_denied`, `csrf_missing`, `csrf_invalid`, `reauth_missing`, `reauth_unavailable` ou `reauth_rejected`. Não são incluídos senha, TOTP, cookie, token/evidência, hash de token, payload de custo ou texto de erro do PostgreSQL.
+- Recusas RBAC e falhas da operação recebem evento `denied`/`failure` com ação de operação; IDs de recurso no handler são aceitos somente no formato UUID. IP inválido é omitido.
+- Falha ao registrar uma recusa também resulta em `503 audit_unavailable`; nenhuma mutação é iniciada. MFA, sessão, CSRF e RBAC permanecem os mecanismos existentes.
+- Essa política se aplica aos endpoints do motor de custos desta etapa; não representa hardening dos demais handlers administrativos de produção.
+

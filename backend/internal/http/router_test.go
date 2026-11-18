@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	adminapp "example.com/loja-3d/backend/internal/application/admin"
 	apihttp "example.com/loja-3d/backend/internal/http"
 	"example.com/loja-3d/backend/internal/http/handlers"
 )
@@ -15,6 +16,12 @@ import (
 type readinessStub struct{ err error }
 
 func (stub readinessStub) Check(context.Context) error { return stub.err }
+
+type auditOnlyAdminRepository struct{ adminapp.Repository }
+
+func (auditOnlyAdminRepository) Audit(context.Context, *string, *string, string, string, string, string, string) error {
+	return nil
+}
 
 func TestHealthEndpoint(t *testing.T) {
 	t.Parallel()
@@ -51,7 +58,8 @@ func TestHealthEndpoint(t *testing.T) {
 }
 
 func TestManufacturingCostRoutesAreRegisteredAndProtected(t *testing.T) {
-	handler := apihttp.NewHandlerCompleteWithProduction("http://localhost:3000", readinessStub{}, nil, nil, nil, nil, nil, nil, handlers.NewProductionHandler(nil, nil))
+	admin := adminapp.New(auditOnlyAdminRepository{})
+	handler := apihttp.NewHandlerCompleteWithProduction("http://localhost:3000", readinessStub{}, nil, nil, nil, nil, nil, nil, handlers.NewProductionHandler(nil, admin))
 	for _, route := range []struct{ method, path string }{
 		{http.MethodGet, "/api/v1/admin/production/printers/not-a-uuid/cost-profile"},
 		{http.MethodPost, "/api/v1/admin/production/runs/not-a-uuid/costs/actual"},

@@ -184,6 +184,32 @@ func (s *Service) Logout(ctx context.Context, session domain.Session, ip string)
 func (s *Service) Audit(ctx context.Context, session domain.Session, action, resourceType, resourceID, result, ip string) error {
 	return s.repo.Audit(ctx, &session.UserID, &session.ID, action, resourceType, resourceID, result, ip)
 }
+
+// AuditProductionCostSecurity records bounded, non-sensitive security events
+// for the manufacturing-cost endpoints. A nil session represents an
+// unauthenticated attempt. The event name is supplied only by server code.
+func (s *Service) AuditProductionCostSecurity(ctx context.Context, session *domain.Session, action, outcome, ip string) error {
+	allowedActions := map[string]struct{}{
+		"production.cost.security.session_denied":     {},
+		"production.cost.security.csrf_missing":       {},
+		"production.cost.security.csrf_invalid":       {},
+		"production.cost.security.reauth_missing":     {},
+		"production.cost.security.reauth_unavailable": {},
+		"production.cost.security.reauth_rejected":    {},
+	}
+	if _, ok := allowedActions[action]; !ok || len(action) > 96 {
+		return ErrForbidden
+	}
+	if outcome != "denied" && outcome != "failure" {
+		return ErrInvalid
+	}
+	var userID, sessionID *string
+	if session != nil && session.UserID != "" && session.ID != "" {
+		userID, sessionID = &session.UserID, &session.ID
+	}
+	return s.repo.Audit(ctx, userID, sessionID, action, "production_cost_security", "", outcome, ip)
+}
+
 func (s *Service) Stats(ctx context.Context, session domain.Session, ip string) (domain.Stats, error) {
 	v, e := s.repo.Stats(ctx)
 	_ = s.repo.Audit(ctx, &session.UserID, &session.ID, "quotes.stats", "quote", "", outcome(e), ip)

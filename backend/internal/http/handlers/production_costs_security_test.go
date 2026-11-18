@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	adminapp "example.com/loja-3d/backend/internal/application/admin"
+	identityapp "example.com/loja-3d/backend/internal/application/identity"
 	app "example.com/loja-3d/backend/internal/application/production"
 	admindomain "example.com/loja-3d/backend/internal/domain/admin"
 	domain "example.com/loja-3d/backend/internal/domain/production"
@@ -21,15 +23,23 @@ type costSecurityAdminRepo struct {
 	adminapp.Repository
 	role, csrf string
 	audits     []string
+	auditErr   error
 }
 
 func (r *costSecurityAdminRepo) GetSession(context.Context, string) (admindomain.Session, error) {
 	return admindomain.Session{ID: "session-test", UserID: "admin-test", Role: r.role, CSRFHash: r.csrf, AuthenticationLevel: "mfa", ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
-func (r *costSecurityAdminRepo) Audit(_ context.Context, _ *string, _ *string, action, _, _, outcome, _ string) error {
-	r.audits = append(r.audits, action+":"+outcome)
-	return nil
+func (r *costSecurityAdminRepo) Audit(_ context.Context, userID, sessionID *string, action, resource, resourceID, outcome, ip string) error {
+	entry := action + ":" + outcome + ":" + resource + ":" + resourceID + ":" + ip
+	if userID != nil {
+		entry += ":user=" + *userID
+	}
+	if sessionID != nil {
+		entry += ":session=" + *sessionID
+	}
+	r.audits = append(r.audits, entry)
+	return r.auditErr
 }
 
 type costSecurityCostRepo struct {
@@ -37,8 +47,19 @@ type costSecurityCostRepo struct {
 	calls map[string]int
 }
 
+type costReauthConsumeRepo struct {
+	identityapp.Repository
+	err     error
+	rawHash string
+}
+
+func (r *costReauthConsumeRepo) ConsumeReauthEvidence(_ context.Context, _, _, tokenHash string) error {
+	r.rawHash = tokenHash
+	return r.err
+}
+
 func (r *costSecurityCostRepo) called(name string) { r.calls[name]++ }
-func (r *costSecurityCostRepo) SaveCostProfile(_ context.Context, printer string, in app.CostProfileInput, _ string) (app.CostProfileView, error) {
+func (r *costSecurityCostRepo) SaveCostProfile(_ context.Context, printer string, in app.CostProfileInput, _ string, _ app.CostAuditContext) (app.CostProfileView, error) {
 	r.called("save_profile")
 	return app.CostProfileView{PrinterID: printer, Version: in.ExpectedVersion + 1}, nil
 }
@@ -56,7 +77,7 @@ func (r *costSecurityCostRepo) LoadRunCostContext(_ context.Context, runID, kind
 	profile := domain.CostProfile{PrinterID: "printer-test", Version: 1, PrinterPowerMilliwatts: &power, MachineUsefulLifeSeconds: 3600}
 	return app.CostContext{Profile: profile, Input: domain.CostInput{Materials: []domain.MaterialCostInput{{ConsumedGrams: 1}}, MachineUsefulLifeSeconds: 3600, RunSeconds: 60}, RunID: runID, PrinterID: "printer-test", SnapshotType: kind, EnergySource: "configured_power", ProfileID: "profile-test", RunVersion: 1, Quantity: 1, MaterialBreakdown: []byte("[]")}, nil
 }
-func (r *costSecurityCostRepo) SaveRunCostSnapshot(_ context.Context, c app.CostContext, b domain.CostBreakdown, _ string) (app.CostSnapshotView, error) {
+func (r *costSecurityCostRepo) SaveRunCostSnapshot(_ context.Context, c app.CostContext, b domain.CostBreakdown, _ string, _ app.CostAuditContext) (app.CostSnapshotView, error) {
 	r.called("save_snapshot")
 	return app.CostSnapshotView{ID: "snapshot-test", RunID: c.RunID, CostBreakdown: b}, nil
 }
@@ -134,6 +155,9 @@ func TestCostEndpointsAnonymousAndRoleMatrix(t *testing.T) {
 				if want == http.StatusOK && len(auditRepo.audits) != 1 {
 					t.Fatalf("authorized read did not invoke audit; entries=%v", auditRepo.audits)
 				}
+				if want == http.StatusForbidden && (len(auditRepo.audits) != 1 || !strings.Contains(auditRepo.audits[0], ":denied:")) {
+					t.Fatalf("RBAC denial was not audited once: %v", auditRepo.audits)
+				}
 			})
 		}
 	}
@@ -162,7 +186,7 @@ func TestCostMutationsFailClosedOnCSRFAndMissingReauthentication(t *testing.T) {
 		})
 		for _, csrf := range []struct{ name, value string }{{"missing", ""}, {"invalid", "csrf-wrong"}} {
 			t.Run(tc.name+"/csrf_"+csrf.name, func(t *testing.T) {
-				h, _, repo := newCostSecurityHandler("production_manager")
+				h, auditRepo, repo := newCostSecurityHandler("production_manager")
 				req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
 				req.AddCookie(&http.Cookie{Name: "loja3d_admin_session", Value: "session-from-existing-system"})
 				if csrf.value != "" {
@@ -174,10 +198,13 @@ func TestCostMutationsFailClosedOnCSRFAndMissingReauthentication(t *testing.T) {
 				if res.Code != http.StatusForbidden || len(repo.calls) != 0 {
 					t.Fatalf("status=%d calls=%v body=%s", res.Code, repo.calls, res.Body.String())
 				}
+				if len(auditRepo.audits) != 1 || !strings.Contains(auditRepo.audits[0], "production.cost.security.csrf_"+csrf.name+":denied") {
+					t.Fatalf("CSRF rejection audit missing or duplicated: %v", auditRepo.audits)
+				}
 			})
 		}
 		t.Run(tc.name+"/reauth_missing_fails_closed", func(t *testing.T) {
-			h, _, repo := newCostSecurityHandler("production_manager")
+			h, auditRepo, repo := newCostSecurityHandler("production_manager")
 			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
 			req.AddCookie(&http.Cookie{Name: "loja3d_admin_session", Value: "session-from-existing-system"})
 			req.Header.Set("X-CSRF-Token", "csrf-test")
@@ -186,6 +213,9 @@ func TestCostMutationsFailClosedOnCSRFAndMissingReauthentication(t *testing.T) {
 			tc.call(h, res, req)
 			if res.Code != http.StatusServiceUnavailable || len(repo.calls) != 0 {
 				t.Fatalf("missing reauthentication must fail before mutation: status=%d calls=%v", res.Code, repo.calls)
+			}
+			if len(auditRepo.audits) != 1 || !strings.Contains(auditRepo.audits[0], "production.cost.security.reauth_missing:denied") {
+				t.Fatalf("reauth rejection audit missing or duplicated: %v", auditRepo.audits)
 			}
 		})
 	}
@@ -200,11 +230,101 @@ func TestCostEndpointAuditUsesSensitiveActionNames(t *testing.T) {
 	if res.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
 	}
-	if len(auditRepo.audits) != 1 || auditRepo.audits[0] != "production.cost_analytics.read:success" {
+	if len(auditRepo.audits) != 1 || !strings.HasPrefix(auditRepo.audits[0], "production.cost_analytics.read:success:") {
 		t.Fatalf("unexpected audit entries: %v", auditRepo.audits)
 	}
 	var response map[string]json.RawMessage
 	if err := json.Unmarshal(res.Body.Bytes(), &response); err != nil || response["data"] == nil {
 		t.Fatalf("invalid success response/audit test: %s err=%v", res.Body.String(), err)
+	}
+}
+
+func TestCostReadFailsClosedWhenAuditUnavailable(t *testing.T) {
+	h, auditRepo, _ := newCostSecurityHandler("production_manager")
+	auditRepo.auditErr = errors.New("database details must not reach client")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/production/analytics/cost-profitability", nil)
+	req.AddCookie(&http.Cookie{Name: "loja3d_admin_session", Value: "session-from-existing-system"})
+	res := httptest.NewRecorder()
+	h.CostProfitability(res, req)
+	if res.Code != http.StatusServiceUnavailable || strings.Contains(res.Body.String(), "database details") || strings.Contains(res.Body.String(), `"data"`) {
+		t.Fatalf("audit failure must suppress sensitive result with sanitized 503: status=%d body=%s", res.Code, res.Body.String())
+	}
+}
+
+func TestCostSecurityAuditFailureFailsClosedAndOmitsSecrets(t *testing.T) {
+	h, auditRepo, costRepo := newCostSecurityHandler("production_manager")
+	secret := "reauth-secret-that-must-not-be-audited"
+	auditRepo.auditErr = errors.New("storage unavailable")
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/production/printers/p/cost-profile", strings.NewReader(`{}`))
+	req.AddCookie(&http.Cookie{Name: "loja3d_admin_session", Value: "session-from-existing-system"})
+	req.Header.Set("X-Reauthentication-Token", secret)
+	// No CSRF header: this must be rejected and audited without inspecting or
+	// copying the reauthentication credential into the audit record.
+	req.SetPathValue("printerID", "p")
+	res := httptest.NewRecorder()
+	h.CostProfile(res, req)
+	if res.Code != http.StatusServiceUnavailable || len(costRepo.calls) != 0 {
+		t.Fatalf("audit outage must fail closed: status=%d calls=%v", res.Code, costRepo.calls)
+	}
+	for _, event := range auditRepo.audits {
+		if strings.Contains(event, secret) || strings.Contains(event, "csrf-secret") {
+			t.Fatalf("sensitive credential appeared in audit event: %q", event)
+		}
+	}
+}
+
+func TestCostReauthenticationRejectionAuditOmitsCredential(t *testing.T) {
+	h, auditRepo, costRepo := newCostSecurityHandler("production_manager")
+	secret := "reauth-secret-that-must-not-be-audited"
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/production/printers/p/cost-profile", strings.NewReader(`{}`))
+	req.AddCookie(&http.Cookie{Name: "loja3d_admin_session", Value: "session-from-existing-system"})
+	req.Header.Set("X-CSRF-Token", "csrf-test")
+	req.Header.Set("X-Reauthentication-Token", secret)
+	req.SetPathValue("printerID", "p")
+	res := httptest.NewRecorder()
+	h.CostProfile(res, req)
+	if res.Code != http.StatusServiceUnavailable || len(costRepo.calls) != 0 {
+		t.Fatalf("unavailable reauthentication must fail closed: status=%d calls=%v", res.Code, costRepo.calls)
+	}
+	if len(auditRepo.audits) != 1 || !strings.HasPrefix(auditRepo.audits[0], "production.cost.security.reauth_unavailable:denied:") || strings.Contains(auditRepo.audits[0], secret) {
+		t.Fatalf("reauth rejection should emit one sanitized event: %v", auditRepo.audits)
+	}
+}
+
+func TestCostInvalidReauthenticationEvidenceAuditedWithoutToken(t *testing.T) {
+	h, auditRepo, costRepo := newCostSecurityHandler("production_manager")
+	identityRepo := &costReauthConsumeRepo{err: identityapp.ErrUnauthorized}
+	h.SetIdentityService(identityapp.New(identityRepo, nil, nil, ""))
+	secret := "one-time-reauth-secret-that-is-not-an-audit-value"
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/production/printers/p/cost-profile", strings.NewReader(`{}`))
+	req.AddCookie(&http.Cookie{Name: "loja3d_admin_session", Value: "session-from-existing-system"})
+	req.Header.Set("X-CSRF-Token", "csrf-test")
+	req.Header.Set("X-Reauthentication-Token", secret)
+	req.SetPathValue("printerID", "p")
+	res := httptest.NewRecorder()
+	h.CostProfile(res, req)
+	if res.Code != http.StatusUnauthorized || identityRepo.rawHash == "" || identityRepo.rawHash == secret || len(costRepo.calls) != 0 {
+		t.Fatalf("invalid evidence must be rejected before mutation: status=%d hashRecorded=%v calls=%v", res.Code, identityRepo.rawHash != "", costRepo.calls)
+	}
+	if len(auditRepo.audits) != 1 || !strings.HasPrefix(auditRepo.audits[0], "production.cost.security.reauth_rejected:denied:") || strings.Contains(auditRepo.audits[0], secret) || strings.Contains(auditRepo.audits[0], identityRepo.rawHash) {
+		t.Fatalf("invalid reauthentication should emit one sanitized event: %v", auditRepo.audits)
+	}
+}
+
+func TestUnauthorizedCostMutationAuditedBeforeReauthentication(t *testing.T) {
+	h, auditRepo, costRepo := newCostSecurityHandler("production_operator")
+	secret := "reauth-evidence-must-not-be-consumed-for-forbidden-role"
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/production/printers/p/cost-profile", strings.NewReader(`{"expected_version":0}`))
+	req.AddCookie(&http.Cookie{Name: "loja3d_admin_session", Value: "session-from-existing-system"})
+	req.Header.Set("X-CSRF-Token", "csrf-test")
+	req.Header.Set("X-Reauthentication-Token", secret)
+	req.SetPathValue("printerID", "p")
+	res := httptest.NewRecorder()
+	h.CostProfile(res, req)
+	if res.Code != http.StatusForbidden || len(costRepo.calls) != 0 {
+		t.Fatalf("unauthorized mutation must be rejected before operation: status=%d calls=%v", res.Code, costRepo.calls)
+	}
+	if len(auditRepo.audits) != 1 || !strings.HasPrefix(auditRepo.audits[0], "production.cost_profile.save:denied:") || strings.Contains(auditRepo.audits[0], secret) {
+		t.Fatalf("authorization denial must be audited once without credentials: %v", auditRepo.audits)
 	}
 }

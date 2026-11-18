@@ -34,6 +34,10 @@ Interface planejada `/admin/producao/custos` (Dark Tech): configuração version
 
 Contratos REST estão documentados em `docs/production-api.md`.
 
+### Auditoria obrigatória (Etapa 10.10.2.1)
+
+As rotas de custo usam somente a auditoria administrativa existente. Atualizações de perfil e gravação/idempotência de snapshots inserem o evento de sucesso na mesma transação PostgreSQL da mutação; falha de auditoria aborta o commit. Leituras sensíveis e operações recusadas só retornam a resposta normal depois de persistir auditoria; falha do sink resulta em resposta genérica 503. Recusas registram eventos de vocabulário fechado para sessão, CSRF e reautenticação, sem copiar credenciais ou mensagens de erro. A homologação real de PostgreSQL desta alteração não foi executada nesta rodada porque `TEST_DATABASE_URL` estava ausente.
+
 ## Homologação PostgreSQL (Etapa 10.10.1, 2026-11-18)
 
 Pré-verificação: `.env` foi lido sem imprimir credenciais; `DATABASE_URL` e `TEST_DATABASE_URL` eram diferentes e apontavam para `localhost:5432/loja_3d` e `localhost:5432/loja_3d_test`, respectivamente. A evidência do operador confirmou o container `store_3d-postgres-1` em execução. Uma consulta somente leitura pelo URL de teste confirmou `current_database()=loja_3d_test`, PostgreSQL `17.6`, migration `27`, `dirty=false`.
@@ -53,3 +57,7 @@ Regressão: `go test ./...` e `go vet ./...` passaram com URLs de banco removida
 Não foi aberta conexão ao banco `loja_3d` e não foram alterados produtos, pedidos, pagamentos, estoque, preço de venda ou snapshots comerciais. Os registros sintéticos foram todos revertidos no banco `_test`/schema efêmero.
 
 Limitações de negócio mantidas: estimativas usam a bobina compatível mais recente, não média contábil; potência configurada não substitui medição; manutenção/hora é rateio informado; tributos, embalagem, comissões e rateio contábil indireto não estão incluídos. Validar a definição da margem com a contabilidade antes de uso fiscal/contábil. A homologação PostgreSQL, incluindo corrida concorrente, está aprovada. A homologação real de sessão/MFA/CSRF/reautenticação permanece pendente; além disso, os handlers ignoram falhas de gravação de auditoria e não auditam falhas de CSRF/reautenticação antes do retorno, limitação registrada na evidência da Fase 3.
+
+**Fase 4 (2026-11-18):** `go test ./...`, `go vet ./...` e regressões direcionadas de custos passaram. A suíte Go foi executada sem `DATABASE_URL` e `TEST_DATABASE_URL`; portanto, testes opt-in com PostgreSQL e limpeza destrutiva foram ignorados, sem conexão ao banco comercial. Frontend: lint, 11 arquivos/32 testes, TypeScript e build passaram. O Vitest e o build precisaram de repetição fora do sandbox por `spawn EPERM`. Nenhuma migration ou dado comercial foi alterado. Detalhes e comandos em `docs/evidence/manufacturing-costs-homologation.md`.
+
+**Decisão de homologação:** implementação e concorrência técnica estão evidenciadas, mas a Etapa 10.10.1 não está integralmente homologada: MFA/sessão administrativa real, reautenticação ponta a ponta, auditoria durável e revisão visual autenticada permanecem pendentes. A matriz completa de classificação e os próximos passos estão em `docs/evidence/manufacturing-costs-final-checklist.md`.

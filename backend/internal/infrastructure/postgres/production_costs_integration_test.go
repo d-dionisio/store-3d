@@ -72,16 +72,59 @@ func TestProductionCostsPostgreSQL(t *testing.T) {
 	}
 	repo := &ProductionCostRepository{pool: tx}
 	base := app.CostProfileInput{ElectricityRateCentsPerKWh: 110, PrinterPowerMilliwatts: ptrInt64(150000), MachineAcquisitionCents: 100000, MachineUsefulLifeSeconds: 36000000, MaintenanceRateCentsPerHour: 20, LaborRateCentsPerHour: 3000, PreparationSeconds: 600, FinishingSeconds: 300}
-	first, err := repo.SaveCostProfile(ctx, printerID, base, adminID)
+	first, err := repo.SaveCostProfile(ctx, printerID, base, adminID, app.CostAuditContext{})
 	if err != nil {
 		t.Fatal("save initial profile:", err)
 	}
 	if first.Version != 1 {
 		t.Fatalf("first profile version=%d", first.Version)
 	}
+	var auditCount int
+	var snapshotCount int
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM admin_audit_events WHERE admin_user_id=$1 AND action='production.cost_profile.save' AND outcome='success'`, adminID).Scan(&auditCount); err != nil || auditCount != 1 {
+		t.Fatalf("successful profile and audit should persist together: audits=%d err=%v", auditCount, err)
+	}
+	installAuditFailure := func() (string, string) {
+		name := "cost_audit_reject_" + strings.ReplaceAll(strings.TrimPrefix(suffix, "cost-test-"), "-", "_")
+		functionName, triggerName := name+"_fn", name+"_trg"
+		if _, createErr := tx.Exec(ctx, fmt.Sprintf(`CREATE FUNCTION public.%s() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test audit sink failure' USING ERRCODE='23514'; END $$`, functionName)); createErr != nil {
+			t.Fatal("create scoped audit failure function:", createErr)
+		}
+		if _, createErr := tx.Exec(ctx, fmt.Sprintf(`CREATE TRIGGER %s BEFORE INSERT ON admin_audit_events FOR EACH ROW WHEN (NEW.action LIKE 'production.cost.%%') EXECUTE FUNCTION public.%s()`, triggerName, functionName)); createErr != nil {
+			t.Fatal("create scoped audit failure trigger:", createErr)
+		}
+		return triggerName, functionName
+	}
+	dropAuditFailure := func(triggerName, functionName string) {
+		if _, dropErr := tx.Exec(ctx, fmt.Sprintf(`DROP TRIGGER %s ON admin_audit_events`, triggerName)); dropErr != nil {
+			t.Fatal("drop scoped audit failure trigger:", dropErr)
+		}
+		if _, dropErr := tx.Exec(ctx, fmt.Sprintf(`DROP FUNCTION public.%s()`, functionName)); dropErr != nil {
+			t.Fatal("drop scoped audit failure function:", dropErr)
+		}
+	}
+	triggerName, functionName := installAuditFailure()
+	failingProfile := base
+	failingProfile.ExpectedVersion = 1
+	failingProfile.ElectricityRateCentsPerKWh++
+	if _, err = repo.SaveCostProfile(ctx, printerID, failingProfile, adminID, app.CostAuditContext{}); !errors.Is(err, app.ErrCostAuditUnavailable) {
+		t.Fatalf("audit persistence failure must abort profile update: %v", err)
+	}
+	var profileCount int
+	var currentVersion int64
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM production_cost_profiles WHERE printer_id=$1`, printerID).Scan(&profileCount); err != nil || profileCount != 1 {
+		t.Fatalf("failed profile audit left profile rows=%d err=%v", profileCount, err)
+	}
+	if err = tx.QueryRow(ctx, `SELECT p.version FROM production_cost_profile_current c JOIN production_cost_profiles p ON p.id=c.profile_id WHERE c.printer_id=$1`, printerID).Scan(&currentVersion); err != nil || currentVersion != 1 {
+		t.Fatalf("failed profile audit moved current pointer to version=%d err=%v", currentVersion, err)
+	}
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM admin_audit_events WHERE admin_user_id=$1 AND action='production.cost_profile.save' AND outcome='success'`, adminID).Scan(&auditCount); err != nil || auditCount != 1 {
+		t.Fatalf("failed profile audit transaction left success events=%d err=%v", auditCount, err)
+	}
+	dropAuditFailure(triggerName, functionName)
 	base.ExpectedVersion = 1
 	base.ElectricityRateCentsPerKWh = 125
-	second, err := repo.SaveCostProfile(ctx, printerID, base, adminID)
+	second, err := repo.SaveCostProfile(ctx, printerID, base, adminID, app.CostAuditContext{})
 	if err != nil {
 		t.Fatal("save next profile version:", err)
 	}
@@ -89,7 +132,7 @@ func TestProductionCostsPostgreSQL(t *testing.T) {
 		t.Fatalf("second profile version=%d", second.Version)
 	}
 	base.ElectricityRateCentsPerKWh = 999
-	if _, err = repo.SaveCostProfile(ctx, printerID, base, adminID); !errors.Is(err, app.ErrConflict) {
+	if _, err = repo.SaveCostProfile(ctx, printerID, base, adminID, app.CostAuditContext{}); !errors.Is(err, app.ErrConflict) {
 		t.Fatalf("stale optimistic version should conflict, got %v", err)
 	}
 	history, err := repo.ListCostProfileHistory(ctx, printerID)
@@ -174,22 +217,32 @@ func TestProductionCostsPostgreSQL(t *testing.T) {
 	if actualBreakdown.MaterialConsumedCents != 2000 || actualBreakdown.MaterialWasteCents != 200 || actualBreakdown.EnergyCents != 63 || actualBreakdown.DepreciationCents != 10 || actualBreakdown.MaintenanceCents != 20 || actualBreakdown.PreparationCents != 1500 || actualBreakdown.FinishingCents != 750 || actualBreakdown.LaborTotalCents != 2250 || actualBreakdown.TotalCostCents != 4543 || actualBreakdown.UnitCostCents != 4543 || actualBreakdown.ContributionMarginCents != 5467 || actualBreakdown.ProfitCents != 5457 {
 		t.Fatalf("unexpected PostgreSQL-backed financial calculation: %+v", actualBreakdown)
 	}
+	triggerName, functionName = installAuditFailure()
+	if _, err = repo.SaveRunCostSnapshot(ctx, costContext, actualBreakdown, adminID, app.CostAuditContext{}); !errors.Is(err, app.ErrCostAuditUnavailable) {
+		t.Fatalf("audit persistence failure must abort snapshot insert: %v", err)
+	}
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM production_run_cost_snapshots WHERE production_run_id=$1`, actualRunID).Scan(&snapshotCount); err != nil || snapshotCount != 0 {
+		t.Fatalf("failed snapshot audit left partial snapshot count=%d err=%v", snapshotCount, err)
+	}
+	dropAuditFailure(triggerName, functionName)
 	badBreakdown := actualBreakdown
 	badBreakdown.TotalCostCents++ // violates the database's component-sum CHECK.
-	if _, err = repo.SaveRunCostSnapshot(ctx, costContext, badBreakdown, adminID); err == nil {
+	if _, err = repo.SaveRunCostSnapshot(ctx, costContext, badBreakdown, adminID, app.CostAuditContext{}); err == nil {
 		t.Fatal("expected database rejection of inconsistent snapshot totals")
 	}
-	var snapshotCount int
 	if err = tx.QueryRow(ctx, `SELECT count(*) FROM production_run_cost_snapshots WHERE production_run_id=$1`, actualRunID).Scan(&snapshotCount); err != nil || snapshotCount != 0 {
 		t.Fatalf("failed snapshot left partial row count=%d err=%v", snapshotCount, err)
 	}
-	actualSnapshot, err := repo.SaveRunCostSnapshot(ctx, costContext, actualBreakdown, adminID)
+	actualSnapshot, err := repo.SaveRunCostSnapshot(ctx, costContext, actualBreakdown, adminID, app.CostAuditContext{})
 	if err != nil {
 		t.Fatal("save actual cost snapshot:", err)
 	}
-	duplicateSnapshot, err := repo.SaveRunCostSnapshot(ctx, costContext, actualBreakdown, adminID)
+	duplicateSnapshot, err := repo.SaveRunCostSnapshot(ctx, costContext, actualBreakdown, adminID, app.CostAuditContext{})
 	if err != nil || duplicateSnapshot.ID != actualSnapshot.ID {
 		t.Fatalf("duplicate actual snapshot was not idempotent: first=%s second=%s err=%v", actualSnapshot.ID, duplicateSnapshot.ID, err)
+	}
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM admin_audit_events WHERE admin_user_id=$1 AND action='production.cost_snapshot.actual' AND outcome='success'`, adminID).Scan(&auditCount); err != nil || auditCount != 2 {
+		t.Fatalf("both successful idempotent requests should be auditable exactly once: audits=%d err=%v", auditCount, err)
 	}
 
 	// Price and operating configuration changes must affect future estimates,
@@ -204,7 +257,7 @@ func TestProductionCostsPostgreSQL(t *testing.T) {
 	base.MaintenanceRateCentsPerHour = 400
 	base.LaborRateCentsPerHour = 6000
 	base.FinishingSeconds = 300
-	third, err := repo.SaveCostProfile(ctx, printerID, base, adminID)
+	third, err := repo.SaveCostProfile(ctx, printerID, base, adminID, app.CostAuditContext{})
 	if err != nil || third.Version != 3 {
 		t.Fatalf("save revised profile version=%d err=%v", third.Version, err)
 	}
@@ -238,14 +291,17 @@ func TestProductionCostsPostgreSQL(t *testing.T) {
 	}
 	badContext := estimateContext
 	badContext.PrinterID = "00000000-0000-4000-8000-000000000000" // FK failure occurs inside the snapshot transaction.
-	if _, err = repo.SaveRunCostSnapshot(ctx, badContext, estimate, adminID); err == nil {
+	if _, err = repo.SaveRunCostSnapshot(ctx, badContext, estimate, adminID, app.CostAuditContext{}); err == nil {
 		t.Fatal("expected invalid printer FK to abort snapshot registration")
 	}
 	if err = tx.QueryRow(ctx, `SELECT count(*) FROM production_run_cost_snapshots WHERE production_run_id=$1`, estimateRunID).Scan(&snapshotCount); err != nil || snapshotCount != 0 {
 		t.Fatalf("failed snapshot transaction left partial row count=%d err=%v", snapshotCount, err)
 	}
-	if _, err = repo.SaveRunCostSnapshot(ctx, estimateContext, estimate, adminID); err != nil {
+	if _, err = repo.SaveRunCostSnapshot(ctx, estimateContext, estimate, adminID, app.CostAuditContext{}); err != nil {
 		t.Fatal("save valid estimate snapshot after failed transaction:", err)
+	}
+	if err = tx.QueryRow(ctx, `SELECT count(*) FROM admin_audit_events WHERE admin_user_id=$1 AND action='production.cost_snapshot.estimate' AND outcome='success'`, adminID).Scan(&auditCount); err != nil || auditCount != 1 {
+		t.Fatalf("estimate snapshot success audit missing or duplicated: events=%d err=%v", auditCount, err)
 	}
 	if err = tx.QueryRow(ctx, `SELECT count(*) FROM production_runs WHERE production_job_id=$1`, jobID).Scan(&snapshotCount); err != nil || snapshotCount != 3 {
 		t.Fatalf("reprint fixture run count=%d err=%v", snapshotCount, err)

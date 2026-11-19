@@ -11,6 +11,7 @@
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",
     "test:e2e:auth": "node playwright/authenticate.mjs",
+    "test:e2e:mfa-isolation": "playwright test --config=playwright.mfa.config.ts",
     "test:e2e:visual": "playwright test production-pages.spec.ts navigation.spec.ts",
     "test:e2e:visual:headed": "playwright test production-pages.spec.ts navigation.spec.ts --headed",
     "test:e2e:report": "playwright show-report playwright-report/visual-homologation-10.10.2.4.4"

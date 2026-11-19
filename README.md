@@ -220,6 +220,7 @@ docker compose config
 - `frontend/src/services`: cliente HTTP tipado, mapeadores do catálogo e health check.
 - `backend/cmd/api`: ponto de entrada e ciclo de vida do servidor HTTP.
 - `backend/cmd/migrate`: comando independente para `up`, `down` e `version`.
+
 - `backend/internal/http`: roteamento, handlers e middleware CORS.
 - `backend/internal/domain/catalog`: entidades e regras do catálogo.
 - `backend/internal/application/catalog`: casos de uso e porta do repositório.
@@ -229,6 +230,14 @@ docker compose config
 ## Limites do protótipo
 
 Não há autenticação, pagamento, frete, envio de formulário, upload, reserva de estoque ou consulta real de pedidos. O catálogo é real no banco local; checkout e orçamento continuam protótipos. URLs externas de imagens exigirão allowlist quando o object storage for definido.
+
+### Custos de fabricação no painel
+
+As rotas administrativas `/admin/producao/custos`, `/custos/impressoras`, `/custos/execucoes` e `/custos/rentabilidade` apresentam parâmetros versionados, snapshots e relatórios do motor de fabricação. Alterações reutilizam a sessão MFA, CSRF e reautenticação atuais. Confira contratos, semântica imutável e limitações em [`docs/manufacturing-costs-frontend.md`](docs/manufacturing-costs-frontend.md).
+
+### Homologação visual Playwright (manual MFA)
+
+O Playwright usa Chromium instalado e não inicia serviços automaticamente. Com frontend/API já disponíveis, execute `cd frontend; npm run test:e2e:auth` e conclua o login e o MFA manualmente na janela aberta. A sessão é salva pelo `storageState` em `%LOCALAPPDATA%\Formo3D\playwright\admin.json` (fora do repositório); nunca compartilhe esse arquivo. Depois execute `npm run test:e2e`. O teste inicial é somente leitura e cobre `/admin/producao` em 1440×1200. `PW_BASE_URL`, `PW_AUTH_STATE` e `PW_SCREENSHOT_PATH` permitem configurar origem e caminhos; não inclua credenciais na URL. Screenshot e relatórios podem conter dados administrativos e permanecem locais/ignorados pelo Git. Instruções detalhadas em `docs/evidence/playwright-setup.md`.
 
 ## Propostas de orçamento
 
@@ -400,4 +409,8 @@ A migration 26 adiciona especificações versionadas, configuração instalada e
 ### Monitoramento Bambu Lab
 
 Aplique a migration 27, configure `BAMBU_LAN_ENCRYPTION_KEY` e cadastre a conexão LAN no painel. Inicie com `cd backend` e `go run ./cmd/printer-monitor`. A integração exige IP privado e pinagem SHA-256 do certificado e não publica comandos. Consulte `docs/bambulab-integration.md` e `docs/printer-monitoring.md`.
+
+### Homologação visual administrativa (Etapa 10.10.2.4.4)
+
+Com frontend/API já ativos e sessão administrativa MFA legítima salva pelo fluxo manual, execute em `frontend`: `npm run test:e2e:visual`. O comando não inicia serviços nem faz mutações. A rodada mais recente cobriu 12 rotas estáticas, 2 dinâmicas e quatro resoluções: 22 aprovadas, 2 reprovadas por overflow em tablet e 36 bloqueadas por indisponibilidade ou ausência de dados reais. Capturas/relatório locais ficam em `frontend/test-results/visual-homologation/etapa-10.10.2.4.4/` e `frontend/playwright-report/visual-homologation-10.10.2.4.4/`. Consulte `docs/evidence/production-visual-homologation.md`; essa rodada não encerra a homologação visual.
 

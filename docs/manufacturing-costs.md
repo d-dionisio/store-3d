@@ -36,7 +36,7 @@ Contratos REST estão documentados em `docs/production-api.md`.
 
 ### Auditoria obrigatória (Etapa 10.10.2.1)
 
-As rotas de custo usam somente a auditoria administrativa existente. Atualizações de perfil e gravação/idempotência de snapshots inserem o evento de sucesso na mesma transação PostgreSQL da mutação; falha de auditoria aborta o commit. Leituras sensíveis e operações recusadas só retornam a resposta normal depois de persistir auditoria; falha do sink resulta em resposta genérica 503. Recusas registram eventos de vocabulário fechado para sessão, CSRF e reautenticação, sem copiar credenciais ou mensagens de erro. A homologação real de PostgreSQL desta alteração não foi executada nesta rodada porque `TEST_DATABASE_URL` estava ausente.
+As rotas de custo usam somente a auditoria administrativa existente. Atualizações de perfil e gravação/idempotência de snapshots inserem o evento de sucesso na mesma transação PostgreSQL da mutação; falha de auditoria aborta o commit. Leituras sensíveis e operações recusadas só retornam a resposta normal depois de persistir auditoria; falha do sink resulta em resposta genérica 503. Recusas registram eventos de vocabulário fechado para sessão, CSRF e reautenticação, sem copiar credenciais ou mensagens de erro. A homologação PostgreSQL da atomicidade e concorrência passou posteriormente no PowerShell do operador em `loja_3d_test`, migration 28 (`dirty=false`); evidência detalhada em `docs/evidence/manufacturing-costs-homologation.md`.
 
 ## Homologação PostgreSQL (Etapa 10.10.1, 2026-11-18)
 
@@ -61,3 +61,33 @@ Limitações de negócio mantidas: estimativas usam a bobina compatível mais re
 **Fase 4 (2026-11-18):** `go test ./...`, `go vet ./...` e regressões direcionadas de custos passaram. A suíte Go foi executada sem `DATABASE_URL` e `TEST_DATABASE_URL`; portanto, testes opt-in com PostgreSQL e limpeza destrutiva foram ignorados, sem conexão ao banco comercial. Frontend: lint, 11 arquivos/32 testes, TypeScript e build passaram. O Vitest e o build precisaram de repetição fora do sandbox por `spawn EPERM`. Nenhuma migration ou dado comercial foi alterado. Detalhes e comandos em `docs/evidence/manufacturing-costs-homologation.md`.
 
 **Decisão de homologação:** implementação e concorrência técnica estão evidenciadas, mas a Etapa 10.10.1 não está integralmente homologada: MFA/sessão administrativa real, reautenticação ponta a ponta, auditoria durável e revisão visual autenticada permanecem pendentes. A matriz completa de classificação e os próximos passos estão em `docs/evidence/manufacturing-costs-final-checklist.md`.
+
+## Etapa 10.10.2.2 — reautenticação administrativa
+
+O fluxo existente permanece baseado em sessão administrativa MFA, senha + TOTP/código de recuperação, CSRF e evidência opaca de uso único enviada apenas no header da operação sensível. A evidência é persistida como hash e seu TTL continua configurável por `AUTH_REAUTH_TTL` (padrão 5 minutos, máximo aceito 15 minutos). Não foi criado login, cookie ou mecanismo paralelo.
+
+A revisão encontrou uma lacuna concreta no repositório: o consumo verificava vínculo do hash à sessão e expiração da evidência, mas não revalidava a sessão e a conta no mesmo commit. O repositório agora bloqueia identidade e sessão durante validação/consumo, em ordem alinhada à desativação administrativa, e exige sessão ativa, não expirada, usuário ativo e `authentication_level='mfa'` para administradores. A emissão também valida a propriedade da sessão e exige representação de prova TOTP/código de recuperação antes de inserir a evidência. Falhas de persistência são propagadas pelo repositório; a camada de serviço continua respondendo de forma fechada e sem revelar detalhes internos.
+
+Teste unitário direcionado de aplicação passou: MFA administrativo continua obrigatório e a expiração capturada respeita o TTL configurado. `TestAdminReauthenticationPostgreSQL` passou em `loja_3d_test` (PostgreSQL 17.6, migration 28 limpa): expiração, replay, sessão/usuário incorretos, sessão revogada/expirada, corrida com conexões independentes (um único consumo) e falha induzida no UPDATE com rollback. A primeira execução havia encontrado uma constraint temporal na fixture; ela foi corrigida e a repetição passou. Esses resultados homologam persistência/repositório, não uma sessão humana/MFA ponta a ponta.
+
+Não havia sessão administrativa legítima com MFA disponível para este agente. Portanto, login/MFA/cookie/CSRF e uso real da evidência em navegador permanecem pendentes de homologação ponta a ponta; testes com repositório/sessão de fixture não substituem essa evidência. O comando guardado para a execução PostgreSQL e a classificação atual estão em `docs/evidence/manufacturing-costs-homologation.md`.
+
+## Etapa 10.10.2.3 — MFA e sessão administrativa
+
+A inspeção confirmou o fluxo existente: senha → desafio MFA → TOTP/código de recuperação → sessão PostgreSQL com `authentication_level='mfa'`. O cookie `loja3d_admin_session` é HTTP-only, Secure em produção e SameSite Strict. Logout exige CSRF, revoga a sessão e grava auditoria administrativa. A evidência de reautenticação continua vinculada à sessão e é consumida antes das operações sensíveis.
+
+Foi corrigida uma falha concreta: erros inesperados de `GetFactor` eram tratados como ausência de fator. No admin isso podia iniciar sobrescrita/reinscrição do MFA; no cliente podia degradar a sessão para autenticação somente por senha. Agora apenas `ErrUnauthorized` (fator inexistente) segue o ramo de setup/login opcional; falhas de infraestrutura retornam indisponibilidade. Desafios e eventos de emissão são persistidos juntos; sucesso MFA e sessão são registrados na mesma transação. Eventos de tentativa não armazenam senhas, códigos, tokens ou segredo MFA.
+
+Testes direcionados da aplicação/handlers, compilação do pacote PostgreSQL e `go vet ./...` passaram localmente. O operador executou `TestAdminMFASessionPostgreSQL` no PowerShell: **PASS**, teste 1,14 s, pacote 1,634 s, com guardas aprovadas e schema efêmero exclusivamente em `loja_3d_test`. A validação com conta real e navegador continua pendente; veja `docs/evidence/manufacturing-costs-homologation.md`.
+
+### Etapa 10.10.2.4 — homologação visual
+
+Inspeção visual autenticada **pendente**: não havia navegador de automação acessível e as portas locais do frontend/API não estavam em escuta. Nenhuma sessão foi injetada, serviço iniciado, captura produzida ou correção visual presumida. As rotas de produção existem no código, mas não foram visualmente avaliadas. Também não foram encontradas páginas frontend para custos por impressora, estimativa/realizado ou rentabilidade. Detalhes e procedimento manual estão em `docs/evidence/production-visual-homologation.md`.
+
+### Interface administrativa — Etapa 10.10.2.4.1
+
+A interface frontend foi implementada nas rotas `/admin/producao/custos`, `/custos/impressoras`, `/custos/execucoes` e `/custos/rentabilidade`. Ela consome perfis versionados, histórico, snapshots por execução e relatórios de rentabilidade/comparação já existentes; a API continua autoridade para cálculos e autorização. Valores continuam em centavos nos DTOs e são apenas formatados para BRL na apresentação.
+
+Salvar perfil envia `expected_version`; conflito HTTP 409 orienta recarregar. Toda mutação de perfil ou criação de snapshot pede senha e MFA/recovery no diálogo de reautenticação já utilizado pelo painel e envia CSRF e `X-Reauthentication-Token`. A evidência é transitória em memória. Estimativa e realizado criam snapshots imutáveis: a interface confirma essa consequência antes do POST e não disponibiliza edição/exclusão.
+
+Limites contratuais preservados: o endpoint geral `/analytics/costs` oferece custos de material e métricas operacionais, não custo total de fabricação; por isso não é rotulado como custo total. Rentabilidade e comparação usam endpoints financeiros próprios. Não existe endpoint de estimativa sem persistência: gerar estimativa cria snapshot. Não é presumida potência elétrica; ausência de dados suficientes é comunicada pela API. A nova interface ainda requer homologação visual com sessão administrativa legítima e backend com dados adequados.

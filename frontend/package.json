@@ -7,7 +7,13 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint src --max-warnings=0",
-    "test": "vitest run"
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:auth": "node playwright/authenticate.mjs",
+    "test:e2e:visual": "playwright test production-pages.spec.ts navigation.spec.ts",
+    "test:e2e:visual:headed": "playwright test production-pages.spec.ts navigation.spec.ts --headed",
+    "test:e2e:report": "playwright show-report playwright-report/visual-homologation-10.10.2.4.4"
   },
   "dependencies": {
     "lucide-react": "^1.70.0",
@@ -17,6 +23,7 @@
     "react-dom": "19.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.1",
     "@tailwindcss/postcss": "4.3.5",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",

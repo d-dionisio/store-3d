@@ -11,6 +11,11 @@ frontend/coverage/
 frontend/*.tsbuildinfo
 frontend/.env.local
 
+# Local Playwright authentication state and run artifacts (may contain secrets/screenshots)
+**/playwright/.auth/
+frontend/playwright-report/
+frontend/test-results/
+
 # Go build and test artifacts
 backend/bin/
 backend/coverage.out

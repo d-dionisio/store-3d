@@ -145,6 +145,12 @@ Homologação PostgreSQL 10.10.1 (2026-11-18): migration 28 passou up/down/up so
 
 Regressão Fase 4 (2026-11-18): Go `go test ./...`, `go vet ./...` e testes direcionados de custos passaram. DATABASE_URL/TEST_DATABASE_URL permaneceram ausentes, então os testes PostgreSQL opt-in foram ignorados; não houve conexão ao banco. Frontend lint, 11 arquivos/32 testes, `tsc --noEmit` e build passaram. A homologação com sessão/MFA real e auditoria durável não foi feita.
 
+### Reautenticação administrativa — Etapa 10.10.2.2
+
+`POST` de reautenticação administrativa continua exigindo a sessão MFA existente e CSRF; operação sensível consome a evidência opaca de uso único pelo header `X-Reauthentication-Token`. O repositório agora valida sob locks que a sessão vinculada continua ativa, não expirada, MFA e associada a usuário ativo, tanto na emissão como no consumo. Replays, evidência expirada, sessão revogada/expirada e vínculo de outra sessão falham fechados. Falha SQL durante consumo reverte a transação e é mantida genérica na resposta de autenticação.
+
+`go test ./internal/application/identity -run '^TestAdminReauthenticationRequiresMFAAndUsesConfiguredTTL$' -count=1 -v`: PASS. `go test ./internal/infrastructure/postgres -run '^$' -count=1`: PASS (compilação apenas). `go vet ./...`: PASS. Após corrigir a fixture temporal, `TestAdminReauthenticationPostgreSQL` passou em PostgreSQL 17.6, `loja_3d_test`, migration 28 (`dirty=false`), incluindo concorrência real entre conexões e rollback induzido. Nenhuma migration foi executada. A validação com sessão administrativa legítima e MFA continua pendente; relatório: `docs/evidence/manufacturing-costs-homologation.md`.
+
 Classificação consolidada por requisito (incluindo limitações de sessão real, auditoria e inspeção visual): `docs/evidence/manufacturing-costs-final-checklist.md`. Não tratar testes de handler com sessão injetada como prova de autenticação/MFA ponta a ponta.
 
 ### Auditoria do motor de custos — Etapa 10.10.2.1
@@ -155,4 +161,31 @@ Classificação consolidada por requisito (incluindo limitações de sessão rea
 - Recusas RBAC e falhas da operação recebem evento `denied`/`failure` com ação de operação; IDs de recurso no handler são aceitos somente no formato UUID. IP inválido é omitido.
 - Falha ao registrar uma recusa também resulta em `503 audit_unavailable`; nenhuma mutação é iniciada. MFA, sessão, CSRF e RBAC permanecem os mecanismos existentes.
 - Essa política se aplica aos endpoints do motor de custos desta etapa; não representa hardening dos demais handlers administrativos de produção.
+
+### MFA da sessão administrativa
+
+`POST /api/v1/admin/session` valida senha e retorna desafio MFA sem criar sessão. `POST /api/v1/admin/session/mfa` valida TOTP ou consome código de recuperação; só então persiste sessão `mfa` e define cookie HTTP-only `loja3d_admin_session` (Secure em produção, SameSite Strict, Path `/`). `GET /api/v1/admin/security` exige sessão ativa. `DELETE /api/v1/admin/session` exige CSRF, revoga a sessão e limpa o cookie. Operações sensíveis mantêm a evidência de reautenticação já existente; não foi adicionado mecanismo alternativo.
+
+Erro inesperado ao buscar fator MFA agora falha fechado como indisponibilidade; somente fator ausente autoriza configuração inicial. Desafio e evento de emissão são transacionais; evento de MFA bem-sucedido é atômico com a sessão. Eventos não incluem credenciais, códigos, cookies, tokens ou segredo.
+
+Homologação automatizada HTTP/PostgreSQL: `TestAdminMFASessionPostgreSQL` passou em `loja_3d_test` (PostgreSQL 17.6, migration 28, `dirty=false`; 1,14 s de teste). A autenticação manual com navegador e sessão legítima MFA ainda não foi realizada.
+
+### Estado de homologação visual do painel
+
+A Etapa 10.10.2.4 permanece pendente: não houve navegador com sessão MFA legítima disponível nem frontend/API locais em execução nas portas verificadas. Não foram realizadas interações ou capturas. Inspeção estática encontrou as páginas de produção, mas nenhuma interface frontend de custos/rentabilidade; detalhes em `docs/evidence/production-visual-homologation.md`.
+
+### Interface de custos — Etapa 10.10.2.4.1
+
+As páginas frontend consomem exclusivamente os contratos existentes:
+
+| Página | Consultas |
+| --- | --- |
+| `/admin/producao/custos` | `GET /api/v1/admin/production/analytics/costs`, `/analytics/cost-profitability`, `/analytics/cost-profitability/printers`, `/analytics/cost-estimate-comparison` |
+| `/admin/producao/custos/impressoras` | `GET /printers`, `GET /printers/{printerID}/cost-profile`, `GET /printers/{printerID}/cost-profile/history`; alteração via `PUT /printers/{printerID}/cost-profile` |
+| `/admin/producao/custos/execucoes` | `GET /history?page=1&limit=100`, `GET /runs/{runID}/costs`; snapshots via `POST /runs/{runID}/costs/estimate` ou `/actual` |
+| `/admin/producao/custos/rentabilidade` | Relatórios do dashboard, filtrados por `from` e `to` (`YYYY-MM-DD`) |
+
+Todos os caminhos são relativos a `/api/v1/admin/production`. Alterações de perfil enviam `expected_version`; snapshots enviam `energy_milliwh`, `preparation_seconds` e `finishing_seconds` quando aplicável. Mutação usa CSRF e evidência de reautenticação nos headers previstos pelo backend. `production_operator` pode consultar analytics operacional, mas não os relatórios financeiros/configuração; o backend permite gerenciamento de custos para `admin` e `production_manager`. A resposta 403 continua sendo autoridade. Basis points são formatados conforme enviados, sem recálculo.
+
+POST `estimate` e `actual` persiste snapshot append-only; a interface solicita confirmação e não oferece edição/exclusão. O endpoint de analytics operacional retorna custo de material, não custo completo. Dados insuficientes são tratados pela API, sem potência técnica presumida.
 

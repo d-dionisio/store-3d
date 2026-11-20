@@ -56,7 +56,9 @@ export async function verifyResponsiveLayout(page: Page, testInfo: TestInfo): Pr
 }
 
 export async function saveVisualScreenshot(page: Page, testInfo: TestInfo, routeId: string, viewportId: string): Promise<string> {
-  const output = path.resolve(process.cwd(), "test-results", "visual-homologation", "etapa-10.10.2.4.4", "screenshots", viewportId, `${routeId}.png`);
+  const runId = process.env.PW_RUN_ID;
+  if (!runId) throw new Error("PW_RUN_ID não foi inicializado pela configuração Playwright.");
+  const output = path.resolve(process.cwd(), "test-results", "visual-homologation", "runs", runId, "screenshots", viewportId, `${routeId}.png`);
   await mkdir(path.dirname(output), { recursive: true });
   const personalFields = [
     page.locator('input[type="email"], input[type="tel"], input[name*="email" i], input[name*="phone" i], [data-sensitive="personal"]'),

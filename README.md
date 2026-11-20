@@ -71,15 +71,18 @@ Para uploads de orçamento, configure `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_K
 
 ### Administrador local
 
-Depois de aplicar as migrations, crie o primeiro administrador em um terminal interativo:
+Depois de aplicar as migrations, crie o primeiro administrador em um terminal interativo. Em homologação, defina `APP_ENV=homologation` e use somente o `DATABASE_URL` provisionado para o banco isolado: o CLI valida loopback, porta `5433`, banco `loja_3d_test`, usuário `formo3d_test` e rejeita hosts ou overrides de conexão incompatíveis antes de solicitar dados ou abrir o pool. A validação não altera o comportamento de desenvolvimento e produção.
 
 ```powershell
 $env:ADMIN_BOOTSTRAP_ENABLED = "true"
-go run ./cmd/admin bootstrap
-$env:ADMIN_BOOTSTRAP_ENABLED = "false"
+try {
+  go run ./cmd/admin bootstrap
+} finally {
+  $env:ADMIN_BOOTSTRAP_ENABLED = "false"
+}
 ```
 
-O comando solicita e-mail, nome e confirmação de senha sem ecoá-la. Ele exige ao menos 12 caracteres, terminal interativo, autorização explícita e banco sem nenhum usuário interno. Após a primeira conta, o bootstrap fica permanentemente bloqueado. Inicie a API com `APP_ENV=production` em produção para exigir cookie Secure. O painel fica em `http://localhost:3000/admin/login`.
+O comando solicita e-mail, nome e confirmação de senha sem ecoá-la. Ele exige ao menos 12 caracteres, terminal interativo, autorização explícita e banco sem nenhum usuário interno. Após a primeira conta, o bootstrap fica permanentemente bloqueado. No primeiro login, o fluxo normal exige configurar e confirmar TOTP antes de emitir sessão. Inicie a API com `APP_ENV=production` em produção para exigir cookie Secure. O painel fica em `http://localhost:3000/admin/login`.
 
 Administradores autenticados podem gerenciar contas pelos endpoints `/api/v1/admin/users`. Toda mutação exige `X-CSRF-Token`; reset de senha, bloqueio e revogação encerram sessões conforme documentado em `docs/access-operations.md`.
 
@@ -413,4 +416,8 @@ Aplique a migration 27, configure `BAMBU_LAN_ENCRYPTION_KEY` e cadastre a conex�
 ### Homologação visual administrativa (Etapa 10.10.2.4.4)
 
 Com frontend/API já ativos e sessão administrativa MFA legítima salva pelo fluxo manual, execute em `frontend`: `npm run test:e2e:visual`. O comando não inicia serviços nem faz mutações. A rodada mais recente cobriu 12 rotas estáticas, 2 dinâmicas e quatro resoluções: 22 aprovadas, 2 reprovadas por overflow em tablet e 36 bloqueadas por indisponibilidade ou ausência de dados reais. Capturas/relatório locais ficam em `frontend/test-results/visual-homologation/etapa-10.10.2.4.4/` e `frontend/playwright-report/visual-homologation-10.10.2.4.4/`. Consulte `docs/evidence/production-visual-homologation.md`; essa rodada não encerra a homologação visual.
+
+#### Correção responsiva (Etapa 10.10.2.4.5)
+
+Os dois overflows registrados em tablet foram corrigidos em CSS (filtros do histórico e resumo do detalhe de job); lint, Vitest (12 arquivos/37 testes), TypeScript e build passaram. A revalidação Playwright autenticada ficou pendente porque os serviços locais não estavam escutando e não se confirmou que a API estivesse conectada a banco isolado. Nenhum serviço foi iniciado e nenhuma consulta à API/banco foi feita nesta retomada. As capturas antigas foram preservadas; não houve nova captura. Status e causa das páginas anteriormente indisponíveis seguem sem determinação até uma execução com fonte de dados segura. Detalhes: `docs/evidence/production-visual-homologation.md`.
 

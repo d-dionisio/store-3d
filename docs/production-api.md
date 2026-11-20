@@ -189,3 +189,11 @@ Todos os caminhos são relativos a `/api/v1/admin/production`. Alterações de p
 
 POST `estimate` e `actual` persiste snapshot append-only; a interface solicita confirmação e não oferece edição/exclusão. O endpoint de analytics operacional retorna custo de material, não custo completo. Dados insuficientes são tratados pela API, sem potência técnica presumida.
 
+### Etapa 10.10.2.4.5 — correção responsiva e estado dos bloqueios
+
+As chamadas frontend verificadas correspondem às rotas de leitura registradas em `router_admin.go`. Leitura operacional passa por `canRead` (`admin`, `production_manager`, `production_operator`); perfil/custos e rentabilidade passam por `canManage` (`admin`, `production_manager`). O handler mapeia sessão ausente para 401, role insuficiente para 403 e erro inesperado para 500. Isso descreve o contrato implementado, não comprova o status recebido na rodada visual.
+
+A matriz 10.10.2.4.4 não capturou status/corpos das requisições SSR Next.js→Go. Para não acessar dados possivelmente vinculados ao banco comercial, as chamadas não foram repetidas sem comprovar o banco da API. Não foi possível determinar se os bloqueios foram causados por infraestrutura, configuração, backend ou autorização. Resposta vazia válida é tratada como dados vazios; custo 403 tem mensagem específica no frontend, falhas restantes aparecem como indisponibilidade. A investigação operacional permanece pendente.
+
+Os defeitos de overflow em 820×1180 foram corrigidos em CSS: o formulário de histórico agora limita os controles e quebra em duas colunas no tablet; o resumo de job usa colunas sem largura mínima implícita e quebra identificadores longos. O Playwright autenticado ainda não foi reexecutado após a correção; veja `docs/evidence/production-visual-homologation.md` e a matriz.
+

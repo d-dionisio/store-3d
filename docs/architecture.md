@@ -115,7 +115,7 @@ Endpoints atuais:
 
 - O painel `/admin` usa identidade Dark Tech e é separado do layout público.
 - Administradores pertencem a `admin_users`, sem reutilizar tokens de upload ou confiar em flags do frontend.
-- Senhas usam bcrypt. O primeiro administrador nasce por um bootstrap interativo, explicitamente habilitado e permanentemente bloqueado quando já existe qualquer usuário interno.
+- Senhas usam bcrypt. O primeiro administrador nasce por um bootstrap interativo, explicitamente habilitado e permanentemente bloqueado quando já existe qualquer usuário interno. Em `APP_ENV=homologation`, o CLI reutiliza `ValidateHomologationDatabaseURL` antes do prompt e do pool, restringindo o destino ao banco isolado local e rejeitando hosts, portas, usuários, bancos ou overrides incompatíveis; desenvolvimento e produção preservam o fluxo anterior.
 - Sessões usam token aleatório de 256 bits, armazenado apenas como SHA-256, expiram em 8 horas e podem ser revogadas.
 - O cookie é HTTP-only, SameSite Strict e Secure quando `APP_ENV=production`.
 - Operações mutáveis exigem token CSRF vinculado à sessão; login possui rate limiting e bloqueio temporário após falhas.
@@ -621,4 +621,10 @@ A suíte read-only usa o storageState MFA pré-existente, validado sem renovaç�
 ### Etapa 10.10.2.4.3 — infraestrutura de homologação visual
 
 O frontend inclui Playwright Test/Chromium, autenticação manual pela tela administrativa existente e um teste inicial, somente leitura, do dashboard de produção em 1440×1200. O helper não recebe nem lê senha/MFA, não chama APIs de sessão diretamente e persiste o estado com `browserContext.storageState()` fora do repositório, por padrão sob `%LOCALAPPDATA%\Formo3D\playwright`. O cookie HTTP-only da sessão é necessário ao dashboard SSR; o CSRF permanece no `sessionStorage` da aplicação e não é persistido pelo estado Playwright, pois o primeiro teste não executa mutações. Nenhum teste é inicializado via `webServer` e a ferramenta não inicia serviços. Relatórios, traces, screenshots e o estado de autenticação são dados administrativos locais; a matriz visual completa ainda depende de sessão MFA legítima e será tratada na etapa seguinte.
+
+### Etapa 10.10.2.4.5 — correções responsivas e limite da homologação
+
+As capturas anteriores atribuíram os dois overflows a constraints de CSS, sem evidência de regressão de componentes ou dados. Os filtros do histórico receberam tracks e controles com largura mínima zero e quebra responsiva; o resumo do detalhe de job passou a quebrar referências longas. A tabela de detalhe permanece em contêiner com rolagem interna, sem mascarar overflow da página.
+
+A investigação de disponibilidade requer distinguir erro 401/403/500, configuração da API e ausência de registros. A rodada anterior observou estados visuais, não os status das consultas SSR; essa retomada evitou repetir consultas porque não podia provar que a API local estivesse ligada ao banco isolado. Assim, não atribuímos causa sem evidência e a homologação visual pós-correção permanece pendente até haver serviços ativos e fonte de dados autorizada. Nenhuma autenticação, autorização ou integração backend foi alterada.
 

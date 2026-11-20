@@ -4,9 +4,11 @@ import { promisify } from "node:util";
 import { expect, test } from "@playwright/test";
 
 const mkdirAsync = promisify(mkdir);
+const runId = process.env.PW_RUN_ID;
+if (!runId) throw new Error("PW_RUN_ID não foi inicializado pela configuração Playwright.");
 const screenshotPath = path.resolve(
   process.env.PW_SCREENSHOT_PATH ??
-    path.join(process.cwd(), "..", "docs", "evidence", "production-visual", "playwright", "desktop", "production-dashboard.png"),
+    path.join(process.cwd(), "test-results", "visual-homologation", "runs", runId, "screenshots", "desktop", "production-dashboard.png"),
 );
 
 test("dashboard de produção abre com sessão administrativa legítima", async ({ page }, testInfo) => {
@@ -39,7 +41,7 @@ test("dashboard de produção abre com sessão administrativa legítima", async 
   });
 
   if (existsSync(screenshotPath)) {
-    throw new Error("A captura de destino já existe. Mova-a ou defina PW_SCREENSHOT_PATH para evitar sobrescrever evidência anterior.");
+    throw new Error("A captura de destino já existe. Defina um PW_SCREENSHOT_PATH novo; evidências anteriores não são sobrescritas.");
   }
   await mkdirAsync(path.dirname(screenshotPath), { recursive: true });
   await page.screenshot({ path: screenshotPath, fullPage: true, animations: "disabled" });

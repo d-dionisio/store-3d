@@ -19,8 +19,22 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: go run ./cmd/admin bootstrap")
 		os.Exit(2)
 	}
-	if os.Getenv("ADMIN_BOOTSTRAP_ENABLED") != "true" {
+	if err := requireBootstrapEnabled(os.Getenv("ADMIN_BOOTSTRAP_ENABLED")); err != nil {
 		fail("bootstrap disabled; set ADMIN_BOOTSTRAP_ENABLED=true only for the initial authorized operation")
+	}
+	appEnv := os.Getenv("APP_ENV")
+	var config postgres.Config
+	configLoaded := false
+	if appEnv == "homologation" {
+		var err error
+		config, err = postgres.LoadConfig()
+		if err != nil {
+			fail("invalid database configuration")
+		}
+		if err := validateBootstrapDatabaseTarget(appEnv, config); err != nil {
+			fail("homologation database target rejected")
+		}
+		configLoaded = true
 	}
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		fail("bootstrap requires an interactive terminal")
@@ -39,9 +53,12 @@ func main() {
 	if err != nil {
 		fail("could not hash password")
 	}
-	config, err := postgres.LoadConfig()
-	if err != nil {
-		fail("invalid database configuration")
+	if !configLoaded {
+		var err error
+		config, err = postgres.LoadConfig()
+		if err != nil {
+			fail("invalid database configuration")
+		}
 	}
 	ctx := context.Background()
 	pool, err := postgres.NewPool(ctx, config)
@@ -57,6 +74,20 @@ func main() {
 		fail("could not create initial administrator")
 	}
 	fmt.Printf("initial administrator created: %s (%s)\n", user.Email, user.ID)
+}
+
+func requireBootstrapEnabled(value string) error {
+	if value != "true" {
+		return errors.New("bootstrap is not enabled")
+	}
+	return nil
+}
+
+func validateBootstrapDatabaseTarget(appEnv string, config postgres.Config) error {
+	if appEnv != "homologation" {
+		return nil
+	}
+	return postgres.ValidateHomologationDatabaseURL(config.DatabaseURL)
 }
 
 func prompt(reader *bufio.Reader, label string) string {

@@ -1,0 +1,29 @@
+services:
+  postgres-test:
+    image: postgres:17.6-alpine
+    restart: "no"
+    container_name: ${TEST_POSTGRES_CONTAINER:?set a unique test container name in .env.test}
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: ${TEST_POSTGRES_USER:?set a dedicated test user in .env.test}
+      POSTGRES_PASSWORD_FILE: /run/secrets/test_postgres_password
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - test_postgres_data:/var/lib/postgresql/data
+    secrets:
+      - test_postgres_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U \"$${POSTGRES_USER}\" -d loja_3d_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+volumes:
+  test_postgres_data:
+    name: ${TEST_POSTGRES_VOLUME:?set a unique test-only volume name in .env.test}
+
+secrets:
+  test_postgres_password:
+    file: ${TEST_POSTGRES_PASSWORD_FILE:?set a local test-only password file path in .env.test}

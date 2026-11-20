@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	adminapp "example.com/loja-3d/backend/internal/application/admin"
 	catalogapp "example.com/loja-3d/backend/internal/application/catalog"
 	customerapp "example.com/loja-3d/backend/internal/application/customer"
@@ -38,13 +40,31 @@ func main() {
 	port := envOrDefault("HTTP_PORT", "8080")
 	host := envOrDefault("HTTP_HOST", "127.0.0.1")
 	frontendOrigin := envOrDefault("FRONTEND_ORIGIN", "http://localhost:3000")
+	appEnv := envOrDefault("APP_ENV", "development")
 	databaseConfig, err := postgres.LoadConfig()
 	if err != nil {
+		if appEnv == "homologation" {
+			slog.Error("database startup attestation", "app_env", appEnv, "database_host", "", "database_port", 0, "database_name", "", "database_user", "", "guard_result", "rejected")
+			slog.Error("invalid database configuration")
+			os.Exit(1)
+		}
 		slog.Error("invalid database configuration", "error", err)
 		os.Exit(1)
 	}
+	poolConfig, databaseTarget, guardResult, err := prepareDatabase(appEnv, databaseConfig)
+	if appEnv == "homologation" {
+		if err != nil {
+			slog.Error("database startup attestation", "app_env", appEnv, "database_host", databaseTarget.Host, "database_port", databaseTarget.Port, "database_name", databaseTarget.Database, "database_user", databaseTarget.User, "guard_result", "rejected")
+			slog.Error("homologation database target rejected", "reason", err.Error())
+			os.Exit(1)
+		}
+		slog.Info("database startup attestation", "app_env", appEnv, "database_host", databaseTarget.Host, "database_port", databaseTarget.Port, "database_name", databaseTarget.Database, "database_user", databaseTarget.User, "guard_result", guardResult)
+	} else if err != nil {
+		slog.Error("database initialization failed")
+		os.Exit(1)
+	}
 
-	pool, err := postgres.NewPool(context.Background(), databaseConfig)
+	pool, err := postgres.NewPoolWithConfig(context.Background(), databaseConfig, poolConfig)
 	if err != nil {
 		// Connection errors can contain endpoint metadata. Keep startup logs free of DSN details.
 		slog.Error("database initialization failed")
@@ -71,7 +91,6 @@ func main() {
 	quoteHandler := handlers.NewQuoteHandler(quoteapp.New(quoteRepository, quoteStorage, bucket))
 	adminRepository := postgres.NewAdminRepository(pool)
 	adminService := adminapp.New(adminRepository)
-	appEnv := envOrDefault("APP_ENV", "development")
 	emailPublicURL := envOrDefault("EMAIL_PUBLIC_BASE_URL", envOrDefault("SITE_URL", "http://localhost:3000"))
 	if parsed, parseURLErr := url.Parse(emailPublicURL); appEnv == "production" && (parseURLErr != nil || parsed.Scheme != "https" || parsed.Host == "") {
 		slog.Error("EMAIL_PUBLIC_BASE_URL must be an absolute HTTPS URL in production")
@@ -131,8 +150,8 @@ func main() {
 		if breachURL := strings.TrimSpace(os.Getenv("PASSWORD_BREACH_CHECK_URL")); breachURL != "" {
 			identityService.SetPasswordChecker(securityauth.KAnonymityChecker{BaseURL: breachURL, Client: &http.Client{Timeout: 3 * time.Second}, FailClosed: envOrDefault("PASSWORD_BREACH_FAILURE_MODE", "allow") == "deny"})
 		}
-	} else if appEnv == "production" {
-		slog.Error("MFA encryption configuration is required in production")
+	} else if appEnv == "production" || appEnv == "homologation" {
+		slog.Error("MFA encryption configuration is required in production and homologation")
 		os.Exit(1)
 	} else {
 		slog.Warn("MFA encryption is not configured; password and administrative login endpoints fail closed")
@@ -257,6 +276,31 @@ func main() {
 	}
 
 	slog.Info("API stopped")
+}
+
+// prepareDatabase parses once, validates the homologation target, then returns
+// the exact pgxpool config that startup will pass to NewPoolWithConfig.
+func prepareDatabase(appEnv string, config postgres.Config) (*pgxpool.Config, postgres.DatabaseTarget, string, error) {
+	if appEnv == "homologation" {
+		if err := postgres.ValidateHomologationDatabaseURL(config.DatabaseURL); err != nil {
+			return nil, postgres.DatabaseTarget{}, "rejected", err
+		}
+	}
+	poolConfig, err := postgres.BuildPoolConfig(config)
+	if err != nil {
+		if appEnv == "homologation" {
+			return nil, postgres.DatabaseTarget{}, "rejected", errors.New("homologation database configuration is invalid")
+		}
+		return nil, postgres.DatabaseTarget{}, "not_applicable", err
+	}
+	target := postgres.TargetFromPoolConfig(poolConfig)
+	if appEnv != "homologation" {
+		return poolConfig, target, "not_applicable", nil
+	}
+	if err := postgres.ValidateHomologationPoolConfig(poolConfig); err != nil {
+		return nil, target, "rejected", err
+	}
+	return poolConfig, target, "approved", nil
 }
 
 func envOrDefault(key, fallback string) string {

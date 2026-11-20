@@ -91,7 +91,9 @@ export default class VisualSummaryReporter implements Reporter {
 
   async onEnd(result: FullResult): Promise<void> {
     const finishedAt = new Date();
-    const folder = path.resolve(process.cwd(), "test-results", "visual-homologation", "etapa-10.10.2.4.4");
+    const runId = process.env.PW_RUN_ID;
+    if (!runId) throw new Error("PW_RUN_ID não foi inicializado pela configuração Playwright.");
+    const folder = path.resolve(process.cwd(), "test-results", "visual-homologation", "runs", runId);
     await mkdir(folder, { recursive: true });
     const approved = this.records.filter(record => record.status === "APROVADO").length;
     const rejected = this.records.filter(record => record.status === "REPROVADO").length;
@@ -128,9 +130,7 @@ export default class VisualSummaryReporter implements Reporter {
       note: "Nenhuma URL completa, cookie, header, corpo ou mensagem de erro foi incluída. IDs dinâmicos não são registrados.",
     };
     await writeFile(path.join(folder, "report.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
-    const matrixPath = path.resolve(process.cwd(), "..", "docs", "evidence", "production-visual-matrix.md");
-    await mkdir(path.dirname(matrixPath), { recursive: true });
-    await writeFile(matrixPath, this.renderMatrix(report, finishedAt, counts), "utf8");
+    await writeFile(path.join(folder, "production-visual-matrix.md"), this.renderMatrix(report, finishedAt, counts), "utf8");
   }
 
   private renderMatrix(report: { playwright: string; browser: string; browserVersion: string; baseOrigin: string; status: string }, at: Date, counts: { planned: number; executed: number; evaluated: number; approved: number; rejected: number; blocked: number; notExecuted: number }): string {
@@ -178,7 +178,7 @@ export default class VisualSummaryReporter implements Reporter {
       ...this.records.filter(record => record.status !== "APROVADO").map(record => `- ${record.status}: ${record.route} / ${viewportLabels[record.viewport] ?? record.viewport}; erros=${record.errorCount}; ${record.blockedReason ?? "ver HTML report; mensagens e URLs sensíveis foram omitidas"}.`),
       ...(this.records.every(record => record.status === "APROVADO") ? ["- Nenhuma falha automatizada registrada. A inspeção humana das capturas continua necessária; screenshot isolada não comprova funcionalidade completa."] : []),
       "",
-      "Capturas e relatório JSON ficam em `frontend/test-results/visual-homologation/etapa-10.10.2.4.4/` (artefatos locais ignorados pelo Git). Os documentos em `docs/` não são ignorados pelo `.gitignore` atual e aparecem no status do repositório; nenhum commit foi criado.",
+      `Capturas, relatório JSON e matriz desta execução ficam em \`frontend/test-results/visual-homologation/runs/${process.env.PW_RUN_ID}/\`; o relatório HTML e traces ficam em pastas exclusivas desta execução. Os artefatos anteriores não são sobrescritos.`,
       "",
     ].join("\n");
   }

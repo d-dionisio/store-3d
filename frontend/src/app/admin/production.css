@@ -12,3 +12,24 @@
 .analytics-filters{grid-template-columns:repeat(4,minmax(0,1fr)) auto}
 @media(max-width:1000px){.analytics-filters{grid-template-columns:repeat(3,1fr)}.analytics-grid{grid-template-columns:1fr}.analytics-stats{grid-template-columns:repeat(2,1fr)}}
 @media(max-width:560px){.analytics-filters,.analytics-stats{grid-template-columns:1fr}.analytics-pagination{align-items:flex-start;flex-direction:column;gap:1rem}.analytics-bars article>div,.analytics-ranking>div{align-items:flex-start;flex-direction:column;gap:.3rem}}
+
+/* Keep dense production controls inside the content column on tablet widths. */
+.analytics-filters>*{min-width:0}
+.analytics-filters input,.analytics-filters select{box-sizing:border-box;width:100%;min-width:0}
+@media(max-width:1000px){.analytics-filters{grid-template-columns:repeat(2,minmax(0,1fr))}.analytics-filters button{width:100%}}
+
+/* Long job/order references must wrap instead of widening the summary grid. */
+.production-job-summary{grid-template-columns:repeat(6,minmax(0,1fr))}
+.production-job-summary article{min-width:0}
+.production-job-summary strong{overflow-wrap:anywhere}
+@media(max-width:1100px){.production-job-summary{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:640px){.production-job-summary{grid-template-columns:1fr}}
+@media(max-width:560px){.analytics-filters{grid-template-columns:1fr}}
+
+/* Keep material-entry controls within their tablet grid tracks. */
+.production-form-grid>*{min-width:0}
+.production-form-grid input{box-sizing:border-box;width:100%;min-width:0}
+@media(max-width:1100px){.production-form-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* Installation form has long select options; constrain its intrinsic grid tracks on tablet. */
+@media(min-width:641px) and (max-width:1100px){.production-inline-form{grid-template-columns:repeat(2,minmax(0,1fr))}.production-inline-form>*{min-width:0}.production-inline-form input,.production-inline-form select{box-sizing:border-box;width:100%;min-width:0}}

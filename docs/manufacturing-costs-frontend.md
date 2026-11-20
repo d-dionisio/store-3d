@@ -61,3 +61,9 @@ Toda mutação de perfil ou criação de snapshot passa pelo diálogo MFA/reaute
 - Snapshot JSON não expõe `created_at` no DTO atual; portanto a UI não afirma uma data de criação que não recebeu.
 - API e RBAC devem ser homologados com sessão legítima MFA. Testes unitários e build não comprovam login real, permissões reais nem comportamento em navegador autenticado.
 - Revisão visual autenticada em desktop/tablet/mobile permanece pendente; não foram fabricadas capturas.
+
+## Etapa 10.10.2.4.5 — responsividade e disponibilidade
+
+Os filtros do histórico agora se limitam às células e quebram em duas colunas até 1000px (uma abaixo de 560px). O resumo de job evita expansão por referências longas com tracks `minmax(0,1fr)`, quebra de texto e duas colunas em tablet/uma em mobile. Isso corrige a causa CSS observada nas capturas anteriores de 820×1180; a inspeção após a mudança em navegador ainda está pendente.
+
+As rotas frontend continuam alinhadas às rotas registradas no router Go. A matriz anterior viu páginas de indisponibilidade, mas não registrou status das requisições server-side. Nenhuma chamada nova foi feita porque não se confirmou que a API ativa usaria banco isolado; não se leu o banco comercial. Causas atuais de autenticação/RBAC, configuração, conectividade e dados permanecem indeterminadas. A resposta vazia válida continua distinta de falha de carregamento no código de custos. Veja `docs/evidence/production-visual-homologation.md`.

@@ -3,9 +3,15 @@ package postgres
 import (
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 const (
@@ -28,6 +34,58 @@ type Config struct {
 // LoadConfig reads and validates PostgreSQL settings from the environment.
 func LoadConfig() (Config, error) {
 	return loadConfig(os.Getenv)
+}
+
+// ValidateHomologationDatabaseURL accepts only the isolated local test database.
+// It parses the URL with pgx so URL query overrides are checked as the pool sees them.
+func ValidateHomologationDatabaseURL(databaseURL string) error {
+	if strings.TrimSpace(databaseURL) == "" {
+		return errors.New("DATABASE_URL is required for homologation")
+	}
+
+	parsedURL, err := url.Parse(databaseURL)
+	if err != nil || (parsedURL.Scheme != "postgres" && parsedURL.Scheme != "postgresql") {
+		return errors.New("homologation DATABASE_URL must be a PostgreSQL URL")
+	}
+	if parsedURL.User == nil || parsedURL.User.Username() == "" || parsedURL.Path != "/loja_3d_test" {
+		return errors.New("homologation DATABASE_URL must identify the test database and user")
+	}
+
+	parsedConfig, err := pgx.ParseConfig(databaseURL)
+	if err != nil {
+		// pgx parse errors may include connection input; do not propagate it to logs.
+		return errors.New("homologation DATABASE_URL is invalid")
+	}
+	return ValidateHomologationPoolConfig(&pgxpool.Config{ConnConfig: parsedConfig})
+}
+
+// ValidateHomologationPoolConfig checks the already parsed target that will be
+// handed to pgxpool, preventing attestation and pool configuration from drifting.
+func ValidateHomologationPoolConfig(config *pgxpool.Config) error {
+	if config == nil || config.ConnConfig == nil {
+		return errors.New("homologation database configuration is invalid")
+	}
+	conn := config.ConnConfig
+	if conn.Database != "loja_3d_test" || conn.User != "formo3d_test" {
+		return errors.New("homologation DATABASE_URL must use the isolated test database and user")
+	}
+	if !isLoopbackHost(conn.Host) || conn.Port != 5433 {
+		return errors.New("homologation DATABASE_URL must target loopback on port 5433")
+	}
+	for _, fallback := range conn.Fallbacks {
+		if !isLoopbackHost(fallback.Host) || fallback.Port != 5433 {
+			return errors.New("homologation DATABASE_URL contains a non-loopback fallback")
+		}
+	}
+	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(strings.TrimSuffix(host, "."), "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func loadConfig(getenv func(string) string) (Config, error) {

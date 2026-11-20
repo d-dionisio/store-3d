@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 import { defineConfig, devices } from "@playwright/test";
@@ -8,6 +9,8 @@ const parsedBaseURL = new URL(baseURL);
 if (parsedBaseURL.username || parsedBaseURL.password || parsedBaseURL.search || parsedBaseURL.hash) {
   throw new Error("PW_BASE_URL deve conter apenas a origem e, opcionalmente, o caminho base.");
 }
+const visualRunId = `${new Date().toISOString().replaceAll(":", "-")}-${randomUUID()}`;
+process.env.PW_RUN_ID = visualRunId;
 const authStatePath = path.resolve(
   process.env.PW_AUTH_STATE ??
     (process.env.LOCALAPPDATA
@@ -24,10 +27,10 @@ export default defineConfig({
   retries: 0,
   timeout: 90_000,
   expect: { timeout: 15_000 },
-  outputDir: "test-results/playwright-run-artifacts",
+  outputDir: path.join("test-results", "playwright-run-artifacts", visualRunId),
   reporter: [
     ["list"],
-    ["html", { outputFolder: "playwright-report/visual-homologation-10.10.2.4.4", open: "never" }],
+    ["html", { outputFolder: path.join("playwright-report", "visual-homologation-runs", visualRunId), open: "never" }],
     ["./playwright/reporters/visual-summary-reporter.ts"],
   ],
   use: {

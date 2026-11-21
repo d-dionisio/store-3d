@@ -3,47 +3,26 @@ package postgres
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	app "example.com/loja-3d/backend/internal/application/production"
 	admindomain "example.com/loja-3d/backend/internal/domain/admin"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestProductionPlanningVolumeAndGlobalMetrics(t *testing.T) {
-	dsn := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL is required")
-	}
-	config, err := pgxpool.ParseConfig(dsn)
-	if err != nil || !strings.HasSuffix(strings.ToLower(config.ConnConfig.Database), "_test") || strings.EqualFold(config.ConnConfig.Database, "loja_3d") {
-		t.Fatal("volume test requires a dedicated *_test database")
-	}
-	if development := strings.TrimSpace(os.Getenv("DATABASE_URL")); development != "" && development == dsn {
-		t.Fatal("TEST_DATABASE_URL must differ from DATABASE_URL")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
-	pool, err := pgxpool.NewWithConfig(ctx, config)
-	if err != nil {
-		t.Fatal(err)
-	}
+	pool, ctx := newProductionIntegrationPool(t, "planning_volume")
 	defer pool.Close()
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback(context.Background())
-	// Fixtures exist only inside this transaction. Replica mode permits representative
-	// historical states without executing commercial transition/payment triggers.
-	if _, err = tx.Exec(ctx, `SET LOCAL session_replication_role = replica`); err != nil {
-		t.Fatalf("isolated fixture mode: %v", err)
-	}
+	// Fixtures exist in an owned schema and transaction; production triggers and
+	// foreign keys remain enabled for every insert and transition.
 	suffix := fmt.Sprintf("planning-volume-%d", time.Now().UnixNano())
-	var categoryID, materialID, colorID, materialEnoughID, colorEnoughID, productID, variantID, userID, orderID string
+	var categoryID, materialID, colorID, materialEnoughID, colorEnoughID, productID, variantID, userID, adminID, orderID string
 	mustID := func(query string, args []any, target *string) {
 		t.Helper()
 		if err := tx.QueryRow(ctx, query, args...).Scan(target); err != nil {
@@ -58,7 +37,11 @@ func TestProductionPlanningVolumeAndGlobalMetrics(t *testing.T) {
 	mustID(`INSERT INTO products(category_id,slug,name,description,status) VALUES($1,$2,$3,'Volume fixture','draft') RETURNING id`, []any{categoryID, suffix, "Product " + suffix}, &productID)
 	mustID(`INSERT INTO product_variants(product_id,material_id,color_id,sku,price_cents,stock_quantity,name) VALUES($1,$2,$3,$4,100,1000,'Volume') RETURNING id`, []any{productID, materialID, colorID, "SKU-" + suffix}, &variantID)
 	mustID(`INSERT INTO users(email,full_name,email_verified_at) VALUES($1,'Planning fixture',now()) RETURNING id`, []any{suffix + "@example.test"}, &userID)
+	mustID(`INSERT INTO admin_users(email,full_name,password_hash,role) VALUES($1,'Planning manager',repeat('x',60),'production_manager') RETURNING id`, []any{suffix + "-admin@example.test"}, &adminID)
 	mustID(`INSERT INTO orders(order_number,user_id,status,customer_name,customer_email,subtotal_cents,total_cents,payment_readiness) VALUES($1,$2,'confirmed','Planning fixture',$3,15000,15000,'ready') RETURNING id`, []any{"PED-" + suffix, userID, suffix + "@example.test"}, &orderID)
+	if _, err = tx.Exec(ctx, `INSERT INTO payments(order_id,method,status,amount_cents,paid_amount_cents,currency,paid_at) VALUES($1,'pix','paid',15000,15000,'BRL',now())`, orderID); err != nil {
+		t.Fatal("insert settled volume fixture order:", err)
+	}
 
 	printerIDs := make([]string, 3)
 	printerStates := []string{"available", "busy", "maintenance"}
@@ -93,30 +76,16 @@ func TestProductionPlanningVolumeAndGlobalMetrics(t *testing.T) {
 		default:
 			due = nil
 		}
-		completedAt := any(nil)
-		jobStartedAt := any(nil)
 		jobFailure := any(nil)
-		if status == "completed" {
-			completedAt = now.Add(-time.Duration(i%20) * 24 * time.Hour)
-		}
-		if status == "printing" || status == "quality_check" {
-			jobStartedAt = now.Add(-30 * time.Minute)
-		}
 		if status == "failed" {
 			jobFailure = "Fixture failure"
 		}
-		mustID(`INSERT INTO production_jobs(order_item_id,material_id,color_id,quantity,status,job_number,priority,due_at,started_at,completed_at,failure_reason) VALUES($1,$2,$3,1,$4,$5,$6,$7,$8,$9,$10) RETURNING id`, []any{itemID, materialID, colorID, status, fmt.Sprintf("PV-%s-%03d", suffix, i), i % 101, due, jobStartedAt, completedAt, jobFailure}, &jobID)
+		mustID(`INSERT INTO production_jobs(order_item_id,material_id,color_id,quantity,job_number,priority,due_at,failure_reason) VALUES($1,$2,$3,1,$4,$5,$6,$7) RETURNING id`, []any{itemID, materialID, colorID, fmt.Sprintf("PV-%s-%03d", suffix, i), i % 101, due, jobFailure}, &jobID)
 		jobIDs = append(jobIDs, jobID)
 		if status != "awaiting_production" {
 			runStatus := status
-			if runStatus == "quality_check" {
-				runStatus = "quality_check"
-			}
 			if runStatus == "completed" {
-				runStatus = "completed"
-			}
-			if runStatus == "cancelled" {
-				runStatus = "cancelled"
+				runStatus = "quality_check"
 			}
 			started := any(nil)
 			completed := any(nil)
@@ -130,7 +99,7 @@ func TestProductionPlanningVolumeAndGlobalMetrics(t *testing.T) {
 				started = now.Add(-30 * time.Minute)
 			}
 			if status == "completed" {
-				completed = now.Add(-10 * time.Minute)
+				completed = now.Add(-time.Duration(i%20) * 24 * time.Hour)
 				actual = 20 + (i % 11)
 			}
 			if status == "failed" {
@@ -147,6 +116,17 @@ func TestProductionPlanningVolumeAndGlobalMetrics(t *testing.T) {
 			var runID string
 			mustID(`INSERT INTO production_runs(production_job_id,printer_id,attempt_number,quantity,status,estimated_minutes,actual_minutes,estimated_weight_grams,started_at,completed_at,failure_reason) VALUES($1,$2,1,1,$3,$4,$5,$6,$7,$8,$9) RETURNING id`, []any{jobID, printer, runStatus, estimated, actual, weight, started, completed, failure}, &runID)
 			runIDs[jobID] = runID
+			if status == "completed" {
+				if _, err = tx.Exec(ctx, `INSERT INTO quality_inspections(production_run_id,result,dimensional_accuracy_ok,visual_quality_ok,functional_test_ok,inspected_by_admin_user_id) VALUES($1,'approved',true,true,true,$2)`, runID, adminID); err != nil {
+					t.Fatalf("insert approved completion inspection for fixture %03d: %v", i, err)
+				}
+				if _, err = tx.Exec(ctx, `SELECT transition_production_run($1,'completed',$2,'volume fixture completed',1)`, runID, adminID); err != nil {
+					t.Fatalf("complete inspected fixture run %03d: %v", i, err)
+				}
+			}
+		}
+		if err = transitionProductionJobFixture(ctx, tx, jobID, status, adminID); err != nil {
+			t.Fatalf("transition fixture job %03d to %s: %v", i, status, err)
 		}
 	}
 	// Explicit reprints exercise latest-attempt selection without changing global job totals.
@@ -247,7 +227,7 @@ func TestProductionPlanningVolumeAndGlobalMetrics(t *testing.T) {
 		t.Fatalf("fixture rollback: %v", err)
 	}
 	var remaining int
-	if err = pool.QueryRow(ctx, `SELECT count(*) FROM production_jobs WHERE job_number LIKE 'PV-planning-volume-%'`).Scan(&remaining); err != nil || remaining != 0 {
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM production_jobs WHERE job_number LIKE $1`, "PV-"+suffix+"-%").Scan(&remaining); err != nil || remaining != 0 {
 		t.Fatalf("fixture cleanup remaining=%d err=%v", remaining, err)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -25,14 +26,28 @@ func BuildPoolConfig(config Config) (*pgxpool.Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse database configuration: %w", err)
 	}
+	healthCheckPeriod, err := effectiveHealthCheckPeriod(config.HealthCheckPeriod)
+	if err != nil {
+		return nil, err
+	}
 
 	poolConfig.MaxConns = config.MaxConns
 	poolConfig.MinConns = config.MinConns
 	poolConfig.MaxConnLifetime = config.MaxConnLifetime
 	poolConfig.MaxConnIdleTime = config.MaxConnIdleTime
-	poolConfig.HealthCheckPeriod = config.HealthCheckPeriod
+	poolConfig.HealthCheckPeriod = healthCheckPeriod
 	poolConfig.ConnConfig.ConnectTimeout = config.ConnectTimeout
 	return poolConfig, nil
+}
+
+func effectiveHealthCheckPeriod(period time.Duration) (time.Duration, error) {
+	if period < 0 {
+		return 0, errors.New("database health check period must not be negative")
+	}
+	if period == 0 {
+		return defaultHealthCheckPeriod, nil
+	}
+	return period, nil
 }
 
 // DatabaseTarget contains only non-secret connection identity fields.
@@ -66,11 +81,17 @@ func NewPoolWithConfig(ctx context.Context, config Config, poolConfig *pgxpool.C
 	if poolConfig == nil {
 		return nil, errors.New("database pool configuration is required")
 	}
+	healthCheckPeriod, err := effectiveHealthCheckPeriod(poolConfig.HealthCheckPeriod)
+	if err != nil {
+		return nil, err
+	}
+	poolConfigCopy := *poolConfig
+	poolConfigCopy.HealthCheckPeriod = healthCheckPeriod
 
 	connectContext, cancel := context.WithTimeout(ctx, config.ConnectTimeout)
 	defer cancel()
 
-	pool, err := pgxpool.NewWithConfig(connectContext, poolConfig)
+	pool, err := pgxpool.NewWithConfig(connectContext, &poolConfigCopy)
 	if err != nil {
 		return nil, fmt.Errorf("create database pool: %w", err)
 	}

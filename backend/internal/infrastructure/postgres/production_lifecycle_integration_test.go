@@ -1,50 +1,28 @@
 package postgres
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
-	"time"
 
 	productionapp "example.com/loja-3d/backend/internal/application/production"
 	admindomain "example.com/loja-3d/backend/internal/domain/admin"
 	productiondomain "example.com/loja-3d/backend/internal/domain/production"
-	"github.com/jackc/pgx/v5/pgxpool"
+	testpostgres "example.com/loja-3d/backend/internal/testsupport/postgres"
 )
 
 // TestProductionLifecycleIntegration homologates the application service and
 // repository against a dedicated, migrated PostgreSQL database. It never uses
 // development orders as fixtures.
 func TestProductionLifecycleIntegration(t *testing.T) {
-	dsn := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL is required")
-	}
-	config, err := pgxpool.ParseConfig(dsn)
+	pool, ctx := newProductionIntegrationPool(t, "prod_lifecycle")
+	fixtureID, err := testpostgres.NewFixtureID()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatal("create unique production-lifecycle fixture identifier")
 	}
-	if !strings.HasSuffix(strings.ToLower(config.ConnConfig.Database), "_test") || strings.EqualFold(config.ConnConfig.Database, "loja_3d") {
-		t.Fatalf("unsafe test database %q", config.ConnConfig.Database)
-	}
-	if development := strings.TrimSpace(os.Getenv("DATABASE_URL")); development != "" && development == dsn {
-		t.Fatal("TEST_DATABASE_URL must differ from DATABASE_URL")
-	}
-
-	ctx := context.Background()
-	pool, err := pgxpool.NewWithConfig(ctx, config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-
-	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	suffix := strings.ReplaceAll(fixtureID, "-", "")
 	var materialID, colorID, categoryID, productID, variantID, userID, orderID, adminID string
-	fixtureRoots := &productionFixtureRoots{}
-	registerProductionFixtureCleanup(t, pool, fixtureRoots)
 	mustScan := func(query string, args []any, destination ...any) {
 		t.Helper()
 		if scanErr := pool.QueryRow(ctx, query, args...).Scan(destination...); scanErr != nil {
@@ -69,8 +47,6 @@ func TestProductionLifecycleIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustScan(`INSERT INTO admin_users(email,full_name,password_hash,role) VALUES($1,'Gerente Homologação',repeat('x',60),'production_manager') RETURNING id`, []any{"manager-life-" + suffix + "@example.test"}, &adminID)
-	*fixtureRoots = productionFixtureRoots{OrderID: orderID, UserID: userID, AdminID: adminID, VariantID: variantID, ProductID: productID, CategoryID: categoryID, MaterialID: materialID, ColorID: colorID}
-
 	manager := admindomain.Session{UserID: adminID, Role: "production_manager"}
 	operator := admindomain.Session{UserID: adminID, Role: "production_operator"}
 	service := productionapp.New(NewProductionRepository(pool))
@@ -101,7 +77,6 @@ func TestProductionLifecycleIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixtureRoots.PrinterID = printer.ID
 	printer, err = service.ChangePrinterStatus(ctx, manager, printer.ID, "maintenance")
 	if err != nil || printer.Status != "maintenance" {
 		t.Fatalf("printer maintenance: %+v %v", printer, err)
@@ -117,7 +92,6 @@ func TestProductionLifecycleIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixtureRoots.SpoolID = spool.ID
 	spool, err = service.AdjustSpoolBalance(ctx, manager, spool.ID, -10, "Calibração de balança", spool.Version)
 	if err != nil || spool.CurrentWeightGrams != 990 {
 		t.Fatalf("spool adjustment: %+v %v", spool, err)

@@ -14,31 +14,33 @@ import (
 	adminapp "example.com/loja-3d/backend/internal/application/admin"
 	productionapp "example.com/loja-3d/backend/internal/application/production"
 	"example.com/loja-3d/backend/internal/infrastructure/postgres"
-	"github.com/jackc/pgx/v5/pgxpool"
+	testpostgres "example.com/loja-3d/backend/internal/testsupport/postgres"
 )
 
 func TestProductionHandlerAuthCSRFRoleAndDTOIntegration(t *testing.T) {
-	dsn := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
-	if dsn == "" {
+	if _, ok := os.LookupEnv(testpostgres.EnvDatabaseURL); !ok {
 		t.Skip("TEST_DATABASE_URL is required")
 	}
-	config, err := pgxpool.ParseConfig(dsn)
-	if err != nil || !strings.HasSuffix(strings.ToLower(config.ConnConfig.Database), "_test") {
-		t.Fatal("production HTTP integration requires a *_test database")
-	}
-	ctx := context.Background()
-	pool, err := pgxpool.NewWithConfig(ctx, config)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	t.Cleanup(cancel)
+	schema, err := testpostgres.CreateSchema(ctx, t, "production_http")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("create isolated production HTTP schema: %v", err)
 	}
-	t.Cleanup(pool.Close)
+	if err = schema.ApplyOfficialMigrations(ctx); err != nil {
+		t.Fatalf("apply official migrations to production HTTP schema: %v", err)
+	}
+	pool, err := schema.OpenPool(ctx)
+	if err != nil {
+		t.Fatalf("open isolated production HTTP pool: %v", err)
+	}
 
 	adminRepository := postgres.NewAdminRepository(pool)
 	adminService := adminapp.New(adminRepository)
 	productionService := productionapp.New(postgres.NewProductionRepository(pool))
 	handler := NewProductionHandler(productionService, adminService)
 	suffix := time.Now().UnixNano()
-	type credentials struct{ token, csrf, sessionID, userID string }
+	type credentials struct{ token, csrf string }
 	credentialsByRole := map[string]credentials{}
 	for _, role := range []string{"admin", "production_manager", "production_operator", "quote_viewer"} {
 		var userID string
@@ -48,21 +50,13 @@ func TestProductionHandlerAuthCSRFRoleAndDTOIntegration(t *testing.T) {
 		}
 		token := fmt.Sprintf("production-http-token-%s-%d", role, suffix)
 		csrf := fmt.Sprintf("production-http-csrf-%s-%d", role, suffix)
-		session, createErr := adminRepository.CreateSession(ctx, userID, adminapp.Hash(token), adminapp.Hash(csrf), "127.0.0.1", "integration test", time.Now().Add(time.Hour))
+		_, createErr := adminRepository.CreateSession(ctx, userID, adminapp.Hash(token), adminapp.Hash(csrf), "127.0.0.1", "integration test", time.Now().Add(time.Hour))
 		if createErr != nil {
 			t.Fatal(createErr)
 		}
-		credentialsByRole[role] = credentials{token: token, csrf: csrf, sessionID: session.ID, userID: userID}
+		credentialsByRole[role] = credentials{token: token, csrf: csrf}
 	}
 	printerCode := fmt.Sprintf("HTTP-PRINTER-%d", suffix)
-	t.Cleanup(func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM printers WHERE code=$1`, printerCode)
-		for _, value := range credentialsByRole {
-			_, _ = pool.Exec(ctx, `DELETE FROM admin_audit_events WHERE session_id=$1 OR admin_user_id=$2`, value.sessionID, value.userID)
-			_, _ = pool.Exec(ctx, `DELETE FROM admin_sessions WHERE id=$1`, value.sessionID)
-			_, _ = pool.Exec(ctx, `DELETE FROM admin_users WHERE id=$1`, value.userID)
-		}
-	})
 
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/admin/production/jobs?page=1&limit=2", nil)
 	response := httptest.NewRecorder()

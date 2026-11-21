@@ -1,52 +1,26 @@
 package postgres
 
 import (
-	"context"
-	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	testpostgres "example.com/loja-3d/backend/internal/testsupport/postgres"
 )
 
 // This suite is intentionally opt-in because it exercises real PostgreSQL
 // triggers and concurrent row locks. Point TEST_DATABASE_URL at an isolated,
 // fully migrated database.
 func TestProductionIntegrityIntegration(t *testing.T) {
-	url := os.Getenv("TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("TEST_DATABASE_URL is required")
-	}
-	poolConfig, err := pgxpool.ParseConfig(url)
+	pool, ctx := newProductionIntegrationPool(t, "prod_integrity")
+	fixtureID, err := testpostgres.NewFixtureID()
 	if err != nil {
-		t.Fatal("invalid TEST_DATABASE_URL")
+		t.Fatal("create unique production-integrity fixture identifier")
 	}
-	// This test deliberately exercises immutable audit records and concurrent
-	// row locks. Never let it write its full commercial graph to a development
-	// database; provision and dispose a dedicated *_test database instead.
-	if !strings.HasSuffix(strings.ToLower(poolConfig.ConnConfig.Database), "_test") {
-		t.Fatalf("TEST_DATABASE_URL must point to a dedicated database whose name ends in _test; got %q", poolConfig.ConnConfig.Database)
-	}
-	if developmentURL := strings.TrimSpace(os.Getenv("DATABASE_URL")); developmentURL != "" && developmentURL == strings.TrimSpace(url) {
-		t.Fatal("TEST_DATABASE_URL must not equal DATABASE_URL")
-	}
-
-	ctx := context.Background()
-	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(pool.Close)
-
-	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	suffix := strings.ReplaceAll(fixtureID, "-", "")
 	var materialID, colorID, categoryID, productID, variantID, userID string
 	var orderID, itemID, adminID, printerID, spoolID string
-	fixtureRoots := &productionFixtureRoots{}
-	registerProductionFixtureCleanup(t, pool, fixtureRoots)
 	mustScan := func(query string, args []any, destination ...any) {
 		t.Helper()
 		if err := pool.QueryRow(ctx, query, args...).Scan(destination...); err != nil {
@@ -65,8 +39,6 @@ func TestProductionIntegrityIntegration(t *testing.T) {
 	mustScan(`INSERT INTO admin_users(email,full_name,password_hash,role) VALUES($1,'Gerente Produção',repeat('x',60),'production_manager') RETURNING id`, []any{"manager-" + suffix + "@example.com"}, &adminID)
 	mustScan(`INSERT INTO printers(code,name,manufacturer,model,build_width_mm,build_depth_mm,build_height_mm) VALUES($1,'A1 Teste','Bambu Lab','A1',256,256,256) RETURNING id`, []any{"printer-" + suffix}, &printerID)
 	mustScan(`INSERT INTO material_spools(spool_code,material_id,color_id,manufacturer,status,initial_weight_grams,current_weight_grams,cost_per_kg_cents) VALUES($1,$2,$3,'Teste','available',100,100,10000) RETURNING id`, []any{"spool-" + suffix, materialID, colorID}, &spoolID)
-	*fixtureRoots = productionFixtureRoots{OrderID: orderID, UserID: userID, AdminID: adminID, PrinterID: printerID, SpoolID: spoolID, VariantID: variantID, ProductID: productID, CategoryID: categoryID, MaterialID: materialID, ColorID: colorID}
-
 	var job1, job2, run1, run2 string
 	mustScan(`INSERT INTO production_jobs(order_item_id,material_id,color_id,quantity) VALUES($1,$2,$3,1) RETURNING id`, []any{itemID, materialID, colorID}, &job1)
 	if _, err = pool.Exec(ctx, `SELECT transition_production_job($1,'queued',$2,'Fila sem pagamento',1)`, job1, adminID); err == nil {

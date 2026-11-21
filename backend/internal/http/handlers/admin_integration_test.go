@@ -8,7 +8,7 @@ import (
 	apihttp "example.com/loja-3d/backend/internal/http"
 	"example.com/loja-3d/backend/internal/http/handlers"
 	"example.com/loja-3d/backend/internal/infrastructure/postgres"
-	"github.com/jackc/pgx/v5/pgxpool"
+	testpostgres "example.com/loja-3d/backend/internal/testsupport/postgres"
 	"golang.org/x/crypto/bcrypt"
 	"net/http"
 	"net/http/httptest"
@@ -21,15 +21,22 @@ type readyStub struct{}
 
 func (readyStub) Check(context.Context) error { return nil }
 func TestAdminHTTPAuthorizationIntegration(t *testing.T) {
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
+	if _, ok := os.LookupEnv(testpostgres.EnvDatabaseURL); !ok {
 		t.Skip("TEST_DATABASE_URL not set")
 	}
-	pool, err := pgxpool.New(context.Background(), dsn)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	t.Cleanup(cancel)
+	schema, err := testpostgres.CreateSchema(ctx, t, "admin_http")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("create isolated admin HTTP schema: %v", err)
 	}
-	defer pool.Close()
+	if err = schema.ApplyOfficialMigrations(ctx); err != nil {
+		t.Fatalf("apply official migrations to admin HTTP schema: %v", err)
+	}
+	pool, err := schema.OpenPool(ctx)
+	if err != nil {
+		t.Fatalf("open isolated admin HTTP pool: %v", err)
+	}
 	hash, _ := bcrypt.GenerateFromPassword([]byte("HTTP-Integration-2026!"), bcrypt.MinCost)
 	emailAdmin := "http-admin-" + time.Now().Format("150405000000000") + "@example.com"
 	var userID string
@@ -37,7 +44,6 @@ func TestAdminHTTPAuthorizationIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer pool.Exec(context.Background(), `DELETE FROM admin_users WHERE id=$1`, userID)
 	admin := handlers.NewAdminHandler(adminapp.New(postgres.NewAdminRepository(pool)), false)
 	router := apihttp.NewHandlerWithAdmin("http://localhost:3000", readyStub{}, nil, nil, admin)
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/admin/dashboard", nil)
@@ -95,5 +101,4 @@ func TestAdminHTTPAuthorizationIntegration(t *testing.T) {
 	if createResponse.Code != http.StatusCreated {
 		t.Fatalf("create user status=%d body=%s", createResponse.Code, createResponse.Body.String())
 	}
-	defer pool.Exec(context.Background(), `DELETE FROM admin_users WHERE lower(email)=lower($1)`, email)
 }

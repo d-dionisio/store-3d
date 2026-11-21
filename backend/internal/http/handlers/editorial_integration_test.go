@@ -13,40 +13,41 @@ import (
 	adminapp "example.com/loja-3d/backend/internal/application/admin"
 	editorialapp "example.com/loja-3d/backend/internal/application/editorial"
 	"example.com/loja-3d/backend/internal/infrastructure/postgres"
-	"github.com/jackc/pgx/v5/pgxpool"
+	testpostgres "example.com/loja-3d/backend/internal/testsupport/postgres"
 )
 
 func TestEditorialHandlerAuthenticationCSRFAndAuditIntegration(t *testing.T) {
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
+	if _, ok := os.LookupEnv(testpostgres.EnvDatabaseURL); !ok {
 		t.Skip("TEST_DATABASE_URL is not configured")
 	}
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	t.Cleanup(cancel)
+	schema, err := testpostgres.CreateSchema(ctx, t, "editorial_http")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("create isolated editorial HTTP schema: %v", err)
 	}
-	t.Cleanup(pool.Close)
+	if err = schema.ApplyOfficialMigrations(ctx); err != nil {
+		t.Fatalf("apply official migrations to editorial HTTP schema: %v", err)
+	}
+	pool, err := schema.OpenPool(ctx)
+	if err != nil {
+		t.Fatalf("open isolated editorial HTTP pool: %v", err)
+	}
 	var userID string
-	if err = pool.QueryRow(ctx, `SELECT id FROM admin_users WHERE role='admin' AND status='active' LIMIT 1`).Scan(&userID); err != nil {
-		t.Skip("active admin fixture is required")
+	suffix := time.Now().UnixNano()
+	if err = pool.QueryRow(ctx, `INSERT INTO admin_users(email,full_name,password_hash,role) VALUES($1,'Editorial HTTP fixture',repeat('x',60),'admin') RETURNING id::text`, fmt.Sprintf("editorial-http-%d@example.test", suffix)).Scan(&userID); err != nil {
+		t.Fatalf("create isolated editorial admin fixture: %v", err)
 	}
 	adminRepository := postgres.NewAdminRepository(pool)
 	adminService := adminapp.New(adminRepository)
 	service := editorialapp.New(postgres.NewEditorialRepository(pool), postgres.NewCatalogRepository(pool))
 	handler := NewEditorialHandler(service, adminService)
-	suffix := time.Now().UnixNano()
 	rawToken, rawCSRF := fmt.Sprintf("editorial-session-%d", suffix), fmt.Sprintf("editorial-csrf-%d", suffix)
 	catalogSlug := fmt.Sprintf("handler-integration-%d", suffix)
 	session, err := adminRepository.CreateSession(ctx, userID, adminapp.Hash(rawToken), adminapp.Hash(rawCSRF), "127.0.0.1", "integration test", time.Now().Add(time.Hour))
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM editorial_catalogs WHERE slug=$1`, catalogSlug)
-		_, _ = pool.Exec(ctx, `DELETE FROM admin_audit_events WHERE session_id=$1`, session.ID)
-		_, _ = pool.Exec(ctx, `DELETE FROM admin_sessions WHERE id=$1`, session.ID)
-	})
 
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/admin/catalogs", nil)
 	response := httptest.NewRecorder()

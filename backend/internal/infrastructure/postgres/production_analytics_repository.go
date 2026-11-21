@@ -213,7 +213,14 @@ func (r *ProductionRepository) analyticsPrinters(ctx context.Context, out *app.P
 	return rows.Err()
 }
 func (r *ProductionRepository) analyticsProducts(ctx context.Context, out *app.ProductivityAnalytics, where string, args []any) error {
-	rows, err := r.pool.Query(ctx, `SELECT coalesce(oi.product_id::text,''),oi.product_name,coalesce(oi.product_variant_id::text,''),coalesce(nullif(concat_ws(' · ',oi.size_name,oi.finish_name,oi.dimensions_snapshot),''),oi.sku_snapshot,''),count(*),count(*)FILTER(WHERE pr.status='completed'),count(*)FILTER(WHERE pr.status='failed'),coalesce(sum(pr.actual_minutes)FILTER(WHERE pr.actual_minutes>0 AND pr.status IN('completed','failed')),0),coalesce(sum(usage.consumed),0),coalesce(sum(`+materialCostSnapshot+`),0),percentile_cont(.5)WITHIN GROUP(ORDER BY pr.actual_minutes)FILTER(WHERE pr.actual_minutes>0 AND pr.status='completed')::float8`+analyticsFrom+where+` GROUP BY oi.product_id,oi.product_name,oi.product_variant_id,oi.sku_snapshot,oi.size_name,oi.finish_name,oi.dimensions_snapshot ORDER BY count(*) DESC LIMIT 100`, args...)
+	rows, err := r.pool.Query(ctx, `SELECT coalesce(oi.product_id::text,''),min(oi.product_name),coalesce(oi.product_variant_id::text,''),min(coalesce(nullif(concat_ws(' · ',oi.size_name,oi.finish_name,oi.dimensions_snapshot),''),oi.sku_snapshot,'')),count(*),count(*)FILTER(WHERE pr.status='completed'),count(*)FILTER(WHERE pr.status='failed'),coalesce(sum(pr.actual_minutes)FILTER(WHERE pr.actual_minutes>0 AND pr.status IN('completed','failed')),0),coalesce(sum(usage.consumed),0),coalesce(sum(`+materialCostSnapshot+`),0),percentile_cont(.5)WITHIN GROUP(ORDER BY pr.actual_minutes)FILTER(WHERE pr.actual_minutes>0 AND pr.status='completed')::float8`+analyticsFrom+where+` GROUP BY oi.product_id,oi.product_variant_id,
+		CASE WHEN oi.product_variant_id IS NULL THEN oi.product_name END,
+		CASE WHEN oi.product_variant_id IS NULL THEN oi.description_snapshot END,
+		CASE WHEN oi.product_variant_id IS NULL THEN oi.sku_snapshot END,
+		CASE WHEN oi.product_variant_id IS NULL THEN oi.size_name END,
+		CASE WHEN oi.product_variant_id IS NULL THEN oi.finish_name END,
+		CASE WHEN oi.product_variant_id IS NULL THEN oi.dimensions_snapshot END
+		ORDER BY count(*) DESC LIMIT 100`, args...)
 	if err != nil {
 		return productionError(err)
 	}
@@ -244,7 +251,14 @@ func (r *ProductionRepository) analyticsMaterials(ctx context.Context, out *app.
 }
 func (r *ProductionRepository) analyticsTime(ctx context.Context, out *app.ProductivityAnalytics, where string, args []any) error {
 	where += ` AND pr.status='completed' AND pr.estimated_minutes>0 AND pr.actual_minutes>0`
-	rows, err := r.pool.Query(ctx, `SELECT coalesce(oi.product_id::text,''),oi.product_name,coalesce(oi.product_variant_id::text,''),coalesce(nullif(concat_ws(' · ',oi.size_name,oi.finish_name,oi.dimensions_snapshot),''),oi.sku_snapshot,''),count(*),percentile_cont(.5)WITHIN GROUP(ORDER BY pr.estimated_minutes)::float8,percentile_cont(.5)WITHIN GROUP(ORDER BY pr.actual_minutes)::float8,percentile_cont(.5)WITHIN GROUP(ORDER BY pr.actual_minutes-pr.estimated_minutes)::float8,percentile_cont(.5)WITHIN GROUP(ORDER BY ((pr.actual_minutes-pr.estimated_minutes)::numeric/pr.estimated_minutes)*100)::float8`+analyticsFrom+where+` GROUP BY oi.product_id,oi.product_name,oi.product_variant_id,oi.sku_snapshot,oi.size_name,oi.finish_name,oi.dimensions_snapshot ORDER BY count(*) DESC LIMIT 100`, args...)
+	rows, err := r.pool.Query(ctx, `SELECT coalesce(oi.product_id::text,''),min(oi.product_name),coalesce(oi.product_variant_id::text,''),min(coalesce(nullif(concat_ws(' · ',oi.size_name,oi.finish_name,oi.dimensions_snapshot),''),oi.sku_snapshot,'')),count(*),percentile_cont(.5)WITHIN GROUP(ORDER BY pr.estimated_minutes)::float8,percentile_cont(.5)WITHIN GROUP(ORDER BY pr.actual_minutes)::float8,percentile_cont(.5)WITHIN GROUP(ORDER BY pr.actual_minutes-pr.estimated_minutes)::float8,percentile_cont(.5)WITHIN GROUP(ORDER BY ((pr.actual_minutes-pr.estimated_minutes)::numeric/pr.estimated_minutes)*100)::float8`+analyticsFrom+where+` GROUP BY oi.product_id,oi.product_variant_id,
+		CASE WHEN oi.product_variant_id IS NULL THEN oi.product_name END,
+		CASE WHEN oi.product_variant_id IS NULL THEN oi.description_snapshot END,
+		CASE WHEN oi.product_variant_id IS NULL THEN oi.sku_snapshot END,
+		CASE WHEN oi.product_variant_id IS NULL THEN oi.size_name END,
+		CASE WHEN oi.product_variant_id IS NULL THEN oi.finish_name END,
+		CASE WHEN oi.product_variant_id IS NULL THEN oi.dimensions_snapshot END
+		ORDER BY count(*) DESC LIMIT 100`, args...)
 	if err != nil {
 		return productionError(err)
 	}

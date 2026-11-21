@@ -10,27 +10,26 @@ import (
 	"time"
 
 	security "example.com/loja-3d/backend/internal/security/auth"
-	"github.com/jackc/pgx/v5/pgxpool"
+	testpostgres "example.com/loja-3d/backend/internal/testsupport/postgres"
 )
 
 func TestIdentityRepositoryIntegration(t *testing.T) {
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
+	if _, ok := os.LookupEnv(testpostgres.EnvDatabaseURL); !ok {
 		t.Skip("TEST_DATABASE_URL is not configured")
 	}
-	config, e := pgxpool.ParseConfig(dsn)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	t.Cleanup(cancel)
+	schema, e := testpostgres.CreateSchema(ctx, t, "identity_repository")
 	if e != nil {
-		t.Fatal(e)
+		t.Fatalf("create isolated identity schema: %v", e)
 	}
-	if !strings.HasSuffix(strings.ToLower(config.ConnConfig.Database), "_test") {
-		t.Fatal("identity integration test requires a dedicated *_test database")
+	if e = schema.ApplyOfficialMigrations(ctx); e != nil {
+		t.Fatalf("apply official migrations to identity schema: %v", e)
 	}
-	pool, e := pgxpool.NewWithConfig(context.Background(), config)
+	pool, e := schema.OpenPool(ctx)
 	if e != nil {
-		t.Fatal(e)
+		t.Fatalf("open isolated identity pool: %v", e)
 	}
-	defer pool.Close()
-	ctx := context.Background()
 	repo := NewIdentityRepository(pool)
 	nonce := time.Now().Format("20060102150405.000000000")
 	email := "identity-" + nonce + "@example.com"
@@ -43,10 +42,6 @@ func TestIdentityRepositoryIntegration(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM security_events WHERE user_id=$1`, identity.ID)
-		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE id=$1`, identity.ID)
-	})
 	if e = repo.ConsumeEmailVerification(ctx, tokenHash("verify-token")); e != nil {
 		t.Fatal(e)
 	}

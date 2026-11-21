@@ -15,9 +15,10 @@ import (
 )
 
 const (
-	defaultMaxConns       = 10
-	defaultMinConns       = 2
-	defaultConnectTimeout = 5 * time.Second
+	defaultMaxConns          = 10
+	defaultMinConns          = 2
+	defaultConnectTimeout    = 5 * time.Second
+	defaultHealthCheckPeriod = time.Minute
 )
 
 // Config contains the database pool settings used by the API.
@@ -118,7 +119,7 @@ func loadConfig(getenv func(string) string) (Config, error) {
 		ConnectTimeout:    connectTimeout,
 		MaxConnLifetime:   30 * time.Minute,
 		MaxConnIdleTime:   5 * time.Minute,
-		HealthCheckPeriod: time.Minute,
+		HealthCheckPeriod: defaultHealthCheckPeriod,
 	}, nil
 }
 

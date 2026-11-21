@@ -3,120 +3,74 @@ package postgres
 import (
 	"context"
 	"errors"
-	"fmt"
-	"strings"
 	"testing"
 	"time"
 
 	app "example.com/loja-3d/backend/internal/application/production"
 	domain "example.com/loja-3d/backend/internal/domain/production"
+	testpostgres "example.com/loja-3d/backend/internal/testsupport/postgres"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // This integration test uses two independent PostgreSQL pools and explicitly
 // holds row locks until both repository calls are observed waiting on them.
-// Its disposable schema is cloned from the migration-28 tables and dropped by
-// its exact generated name after the test; it never touches commercial rows.
+// The schema is created by TestSupport, migrated using the official migration
+// set, and dropped by its exact owned name after the test.
 func TestProductionCostsConcurrencyPostgreSQL(t *testing.T) {
-	dsn := strings.TrimSpace(testDatabaseURL())
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL is required")
-	}
-	cfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		t.Fatal("invalid TEST_DATABASE_URL; credentials hidden")
-	}
-	if cfg.ConnConfig.Database != "loja_3d_test" || strings.EqualFold(cfg.ConnConfig.Database, "loja_3d") {
-		t.Fatal("refusing any database except loja_3d_test")
-	}
-	host := strings.ToLower(cfg.ConnConfig.Host)
-	if (host != "localhost" && host != "127.0.0.1" && host != "::1") || cfg.ConnConfig.Port != 5432 {
-		t.Fatal("test database must use loopback:5432")
-	}
-	dev := strings.TrimSpace(testDevelopmentDatabaseURL())
-	devCfg, err := pgxpool.ParseConfig(dev)
-	if err != nil || dev == dsn || devCfg.ConnConfig.Database != "loja_3d" {
-		t.Fatal("DATABASE_URL and TEST_DATABASE_URL must be distinct and target loja_3d and loja_3d_test respectively")
-	}
-
+	f := newConversionFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	adminCfg := cfg.Copy()
-	adminCfg.ConnConfig.RuntimeParams["application_name"] = "cost-concurrency-setup"
-	adminCfg.MaxConns, adminCfg.MinConns = 4, 0
-	observer, err := pgxpool.NewWithConfig(ctx, adminCfg)
+	observer := f.pool
+	var err error
+	var serverVersion string
+	if err = observer.QueryRow(ctx, `SELECT current_setting('server_version')`).Scan(&serverVersion); err != nil {
+		t.Fatal("read isolated PostgreSQL server version:", err)
+	}
+	suffix, err := testpostgres.NewFixtureID()
 	if err != nil {
-		t.Fatal("connect isolated PostgreSQL test database")
+		t.Fatal("create unique printer fixture identifier:", err)
 	}
-	t.Cleanup(observer.Close)
-	var dbName, serverVersion string
-	if err = observer.QueryRow(ctx, `SELECT current_database(), current_setting('server_version')`).Scan(&dbName, &serverVersion); err != nil {
-		t.Fatal("verify isolated database connection")
+	adminID := ""
+	if err := observer.QueryRow(ctx, `SELECT created_by::text FROM quote_proposals WHERE id=$1`, f.proposalID).Scan(&adminID); err != nil {
+		t.Fatal("load isolated fixture administrator:", err)
 	}
-	if dbName != "loja_3d_test" || !strings.HasPrefix(serverVersion, "17.") {
-		t.Fatalf("database guard failed: database=%q server=%q", dbName, serverVersion)
+	if _, err := f.repo.ConvertQuote(ctx, f.userID, f.reference, f.sessionID); err != nil {
+		t.Fatal("convert isolated quote into a production order fixture:", err)
 	}
-	var migration int
-	var dirty bool
-	if err = observer.QueryRow(ctx, `SELECT version,dirty FROM public.schema_migrations`).Scan(&migration, &dirty); err != nil || migration != 28 || dirty {
-		t.Fatalf("expected migration 28 clean before fixture setup; version=%d dirty=%v err=%v", migration, dirty, err)
+	var orderID, jobID, printerID string
+	var total int64
+	if err := observer.QueryRow(ctx, `SELECT id::text,total_cents FROM orders WHERE quote_id=$1`, f.quoteID).Scan(&orderID, &total); err != nil {
+		t.Fatal("load converted fixture order:", err)
 	}
-
-	schema := fmt.Sprintf("cost_concurrency_%d", time.Now().UnixNano())
-	if _, err = observer.Exec(ctx, `CREATE SCHEMA `+schema); err != nil {
-		t.Fatal("create uniquely named disposable test schema:", err)
+	if _, err := observer.Exec(ctx, `UPDATE orders SET status='confirmed' WHERE id=$1`, orderID); err != nil {
+		t.Fatal("confirm isolated fixture order:", err)
 	}
-	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cleanupCancel()
-		if _, cleanupErr := observer.Exec(cleanupCtx, `DROP SCHEMA `+schema+` CASCADE`); cleanupErr != nil {
-			t.Errorf("drop exact disposable schema %s: %v", schema, cleanupErr)
-			return
-		}
-		var exists bool
-		if cleanupErr := observer.QueryRow(cleanupCtx, `SELECT to_regnamespace($1) IS NOT NULL`, schema).Scan(&exists); cleanupErr != nil || exists {
-			t.Errorf("disposable schema residue exists=%v err=%v", exists, cleanupErr)
-		}
-	})
-
-	for _, table := range []string{"printers", "admin_users", "admin_audit_events", "production_runs", "production_cost_profiles", "production_cost_profile_current", "production_run_cost_snapshots"} {
-		if _, err = observer.Exec(ctx, `CREATE TABLE `+schema+`.`+table+` (LIKE public.`+table+` INCLUDING ALL)`); err != nil {
-			t.Fatalf("clone %s table into disposable test schema: %v", table, err)
-		}
+	if _, err := observer.Exec(ctx, `INSERT INTO payments(order_id,method,status,amount_cents,paid_amount_cents,currency,paid_at) VALUES($1,'pix','paid',$2,$2,'BRL',now())`, orderID, total); err != nil {
+		t.Fatal("settle isolated fixture order:", err)
 	}
-	for _, trigger := range []string{
-		`CREATE TRIGGER production_cost_profiles_append_only BEFORE UPDATE OR DELETE ON ` + schema + `.production_cost_profiles FOR EACH ROW EXECUTE FUNCTION public.prevent_production_cost_history_mutation()`,
-		`CREATE TRIGGER production_run_cost_snapshots_append_only BEFORE UPDATE OR DELETE ON ` + schema + `.production_run_cost_snapshots FOR EACH ROW EXECUTE FUNCTION public.prevent_production_cost_history_mutation()`,
-		`CREATE TRIGGER production_run_cost_snapshot_validate BEFORE INSERT ON ` + schema + `.production_run_cost_snapshots FOR EACH ROW EXECUTE FUNCTION public.validate_production_cost_snapshot()`,
-	} {
-		if _, err = observer.Exec(ctx, trigger); err != nil {
-			t.Fatal("install migration-defined cost triggers in disposable schema:", err)
-		}
+	if _, err := observer.Exec(ctx, `SELECT create_production_jobs_for_paid_order($1)`, orderID); err != nil {
+		t.Fatal("create production job through official paid-order path:", err)
 	}
-
-	var adminID, printerID, runID string
-	suffix := fmt.Sprintf("cost-race-%d", time.Now().UnixNano())
-	if err = observer.QueryRow(ctx, `INSERT INTO `+schema+`.admin_users(email,full_name,password_hash,role) VALUES($1,'Cost race fixture','012345678901234567890123456789012345678901234567890123456789','production_manager') RETURNING id::text`, suffix+"@example.invalid").Scan(&adminID); err != nil {
-		t.Fatal("insert isolated admin fixture:", err)
+	if err := observer.QueryRow(ctx, `SELECT id::text FROM production_jobs WHERE order_item_id IN (SELECT id FROM order_items WHERE order_id=$1)`, orderID).Scan(&jobID); err != nil {
+		t.Fatal("load isolated production job:", err)
 	}
-	if err = observer.QueryRow(ctx, `INSERT INTO `+schema+`.printers(code,name,manufacturer,model,build_width_mm,build_depth_mm,build_height_mm) VALUES($1,'Cost race printer','Fixture','No hardware',100,100,100) RETURNING id::text`, suffix).Scan(&printerID); err != nil {
+	if err := observer.QueryRow(ctx, `INSERT INTO printers(code,name,manufacturer,model,build_width_mm,build_depth_mm,build_height_mm) VALUES($1,'Cost race printer','Fixture','No hardware',100,100,100) RETURNING id::text`, "race-"+suffix).Scan(&printerID); err != nil {
 		t.Fatal("insert isolated printer fixture:", err)
 	}
-	if err = observer.QueryRow(ctx, `INSERT INTO `+schema+`.production_runs(production_job_id,printer_id,attempt_number,quantity,status,actual_minutes,started_at,completed_at) VALUES(gen_random_uuid(),$1,1,1,'completed',1,now()-interval '1 minute',now()) RETURNING id::text`, printerID).Scan(&runID); err != nil {
+	var failedRunID, runID string
+	if err := observer.QueryRow(ctx, `INSERT INTO production_runs(production_job_id,printer_id,attempt_number,quantity,status,actual_minutes,started_at,failure_reason) VALUES($1,$2,1,1,'failed',1,now()-interval '2 minutes','fixture reprint source') RETURNING id::text`, jobID, printerID).Scan(&failedRunID); err != nil {
+		t.Fatal("insert isolated failed reprint source:", err)
+	}
+	if err := observer.QueryRow(ctx, `INSERT INTO production_runs(production_job_id,reprint_of_run_id,printer_id,attempt_number,quantity,status,actual_minutes,started_at,completed_at) VALUES($1,$2,$3,2,1,'completed',1,now()-interval '1 minute',now()) RETURNING id::text`, jobID, failedRunID, printerID).Scan(&runID); err != nil {
 		t.Fatal("insert isolated completed run fixture:", err)
 	}
 
 	newPool := func(appName string) *pgxpool.Pool {
-		poolCfg := cfg.Copy()
-		poolCfg.ConnConfig.RuntimeParams["search_path"] = schema + ",public"
-		poolCfg.ConnConfig.RuntimeParams["application_name"] = appName
-		poolCfg.MaxConns, poolCfg.MinConns = 3, 0
-		p, poolErr := pgxpool.NewWithConfig(ctx, poolCfg)
+		p, poolErr := f.schema.OpenPoolWithApplicationName(ctx, appName)
 		if poolErr != nil {
 			t.Fatalf("open independent pool %s: %v", appName, poolErr)
 		}
-		t.Cleanup(p.Close)
 		return p
 	}
 	poolA, poolB := newPool("cost-race-a"), newPool("cost-race-b")
@@ -145,7 +99,7 @@ func TestProductionCostsConcurrencyPostgreSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	var lockedID string
-	if err = lock.QueryRow(ctx, `SELECT id::text FROM `+schema+`.printers WHERE id=$1 FOR UPDATE`, printerID).Scan(&lockedID); err != nil {
+	if err = lock.QueryRow(ctx, `SELECT id::text FROM printers WHERE id=$1 FOR UPDATE`, printerID).Scan(&lockedID); err != nil {
 		_ = lock.Rollback(ctx)
 		t.Fatal("lock fixture printer:", err)
 	}
@@ -184,7 +138,7 @@ func TestProductionCostsConcurrencyPostgreSQL(t *testing.T) {
 		t.Fatalf("profile optimistic concurrency: accepted=%d conflicts=%d", accepted, conflicted)
 	}
 	var profileRows int
-	if err = observer.QueryRow(ctx, `SELECT count(*) FROM `+schema+`.production_cost_profiles WHERE printer_id=$1`, printerID).Scan(&profileRows); err != nil || profileRows != 2 {
+	if err = observer.QueryRow(ctx, `SELECT count(*) FROM production_cost_profiles WHERE printer_id=$1`, printerID).Scan(&profileRows); err != nil || profileRows != 2 {
 		t.Fatalf("profile race left rows=%d err=%v, want baseline plus one winning version", profileRows, err)
 	}
 	t.Log("profile race: exactly one expected-version=1 update committed as version 2; one conflicted")
@@ -194,7 +148,7 @@ func TestProductionCostsConcurrencyPostgreSQL(t *testing.T) {
 		t.Fatal("load winning profile:", err)
 	}
 	var runVersion int64
-	if err = observer.QueryRow(ctx, `SELECT version FROM `+schema+`.production_runs WHERE id=$1`, runID).Scan(&runVersion); err != nil {
+	if err = observer.QueryRow(ctx, `SELECT version FROM production_runs WHERE id=$1`, runID).Scan(&runVersion); err != nil {
 		t.Fatal(err)
 	}
 	costCtx := app.CostContext{
@@ -210,7 +164,7 @@ func TestProductionCostsConcurrencyPostgreSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = lock.QueryRow(ctx, `SELECT id::text FROM `+schema+`.production_runs WHERE id=$1 FOR UPDATE`, runID).Scan(&lockedID); err != nil {
+	if err = lock.QueryRow(ctx, `SELECT id::text FROM production_runs WHERE id=$1 FOR UPDATE`, runID).Scan(&lockedID); err != nil {
 		_ = lock.Rollback(ctx)
 		t.Fatal("lock fixture run:", err)
 	}
@@ -247,7 +201,7 @@ func TestProductionCostsConcurrencyPostgreSQL(t *testing.T) {
 		}
 	}
 	var snapshotRows int
-	if err = observer.QueryRow(ctx, `SELECT count(*) FROM `+schema+`.production_run_cost_snapshots WHERE production_run_id=$1 AND snapshot_type='actual'`, runID).Scan(&snapshotRows); err != nil || snapshotRows != 1 {
+	if err = observer.QueryRow(ctx, `SELECT count(*) FROM production_run_cost_snapshots WHERE production_run_id=$1 AND snapshot_type='actual'`, runID).Scan(&snapshotRows); err != nil || snapshotRows != 1 {
 		t.Fatalf("concurrent snapshots left rows=%d err=%v, want one", snapshotRows, err)
 	}
 	t.Logf("snapshot race: both independent callers returned the same snapshot id %s; persisted rows=1", snapshotID)
@@ -262,31 +216,35 @@ func TestProductionCostsConcurrencyPostgreSQL(t *testing.T) {
 		t.Fatalf("stale profile version did not conflict: %v", err)
 	}
 	var afterStale int
-	if err = observer.QueryRow(ctx, `SELECT count(*) FROM `+schema+`.production_cost_profiles WHERE printer_id=$1`, printerID).Scan(&afterStale); err != nil || afterStale != 2 {
+	if err = observer.QueryRow(ctx, `SELECT count(*) FROM production_cost_profiles WHERE printer_id=$1`, printerID).Scan(&afterStale); err != nil || afterStale != 2 {
 		t.Fatalf("stale update left partial profile row count=%d err=%v", afterStale, err)
 	}
 	var rollbackRunID string
-	if err = observer.QueryRow(ctx, `INSERT INTO `+schema+`.production_runs(production_job_id,printer_id,attempt_number,quantity,status,actual_minutes,started_at,completed_at) VALUES(gen_random_uuid(),$1,1,1,'completed',1,now()-interval '1 minute',now()) RETURNING id::text`, printerID).Scan(&rollbackRunID); err != nil {
-		t.Fatal("insert isolated rollback run fixture:", err)
+	if err = observer.QueryRow(ctx, `INSERT INTO production_runs(production_job_id,reprint_of_run_id,printer_id,attempt_number,quantity,status,actual_minutes,started_at,completed_at) VALUES($1,$2,$3,3,1,'completed',1,now()-interval '1 minute',now()) RETURNING id::text`, jobID, failedRunID, printerID).Scan(&rollbackRunID); err != nil {
+		t.Fatal("insert isolated rollback snapshot run:", err)
 	}
 	badCtx := costCtx
+	badPrinterID, err := testpostgres.NewFixtureID()
+	if err != nil {
+		t.Fatal("create unique invalid printer reference:", err)
+	}
 	badCtx.RunID = rollbackRunID
 	badCtx.RunVersion = 1
-	badCtx.PrinterID = "00000000-0000-4000-8000-000000000000"
+	badCtx.PrinterID = badPrinterID
 	if _, err = repoA.SaveRunCostSnapshot(ctx, badCtx, breakdown, adminID, app.CostAuditContext{}); err == nil {
 		t.Fatal("snapshot with mismatched run printer should fail")
 	}
 	var rollbackRows int
-	if err = observer.QueryRow(ctx, `SELECT count(*) FROM `+schema+`.production_run_cost_snapshots WHERE production_run_id=$1`, rollbackRunID).Scan(&rollbackRows); err != nil || rollbackRows != 0 {
+	if err = observer.QueryRow(ctx, `SELECT count(*) FROM production_run_cost_snapshots WHERE production_run_id=$1`, rollbackRunID).Scan(&rollbackRows); err != nil || rollbackRows != 0 {
 		t.Fatalf("failed snapshot transaction left partial rows=%d err=%v", rollbackRows, err)
 	}
-	if err = observer.QueryRow(ctx, `SELECT count(*) FROM `+schema+`.production_run_cost_snapshots WHERE production_run_id=$1`, runID).Scan(&snapshotRows); err != nil || snapshotRows != 1 {
+	if err = observer.QueryRow(ctx, `SELECT count(*) FROM production_run_cost_snapshots WHERE production_run_id=$1`, runID).Scan(&snapshotRows); err != nil || snapshotRows != 1 {
 		t.Fatalf("rollback did not preserve the successful historical snapshot: rows=%d err=%v", snapshotRows, err)
 	}
-	if _, err = observer.Exec(ctx, `UPDATE `+schema+`.production_run_cost_snapshots SET total_cost_cents=total_cost_cents+1 WHERE id=$1`, snapshotID); err == nil {
+	if _, err = observer.Exec(ctx, `UPDATE production_run_cost_snapshots SET total_cost_cents=total_cost_cents+1 WHERE id=$1`, snapshotID); err == nil {
 		t.Fatal("append-only snapshot trigger allowed mutation")
 	}
-	if err = observer.QueryRow(ctx, `SELECT count(*) FROM `+schema+`.production_run_cost_snapshots WHERE production_run_id=$1`, runID).Scan(&snapshotRows); err != nil || snapshotRows != 1 {
+	if err = observer.QueryRow(ctx, `SELECT count(*) FROM production_run_cost_snapshots WHERE production_run_id=$1`, runID).Scan(&snapshotRows); err != nil || snapshotRows != 1 {
 		t.Fatalf("snapshot integrity after failure/mutation attempt: rows=%d err=%v", snapshotRows, err)
 	}
 	t.Log("rollback and integrity: stale profile, invalid snapshot, duplicate unique key and immutable-history checks passed")

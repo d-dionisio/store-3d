@@ -5,34 +5,12 @@ import (
 	app "example.com/loja-3d/backend/internal/application/production"
 	domain "example.com/loja-3d/backend/internal/domain/production"
 	"fmt"
-	"github.com/jackc/pgx/v5/pgxpool"
-	"os"
-	"strings"
 	"testing"
 	"time"
 )
 
 func TestProductionTechnicalIntegrityIntegration(t *testing.T) {
-	dsn := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL is required")
-	}
-	cfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasSuffix(strings.ToLower(cfg.ConnConfig.Database), "_test") || strings.EqualFold(cfg.ConnConfig.Database, "loja_3d") {
-		t.Fatal("technical integration requires *_test")
-	}
-	if dev := strings.TrimSpace(os.Getenv("DATABASE_URL")); dev != "" && dev == dsn {
-		t.Fatal("test database must differ")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	pool, err := pgxpool.NewWithConfig(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
+	pool, ctx := newProductionIntegrationPool(t, "technical_integrity")
 	defer pool.Close()
 	tx, err := pool.Begin(ctx)
 	if err != nil {

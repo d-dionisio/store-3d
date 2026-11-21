@@ -3,114 +3,154 @@ package postgres
 import (
 	"context"
 	"errors"
-	app "example.com/loja-3d/backend/internal/application/customer"
-	domain "example.com/loja-3d/backend/internal/domain/customer"
-	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	app "example.com/loja-3d/backend/internal/application/customer"
+	domain "example.com/loja-3d/backend/internal/domain/customer"
+	testpostgres "example.com/loja-3d/backend/internal/testsupport/postgres"
 )
 
 func TestCatalogCheckoutIntegration(t *testing.T) {
-	ctx := context.Background()
-	pool := adminPool(t)
-	suffix := fmt.Sprint(time.Now().UnixNano())
+	if dsn, ok := os.LookupEnv(testpostgres.EnvDatabaseURL); !ok || strings.TrimSpace(dsn) == "" {
+		t.Skip("Catalog checkout PostgreSQL integration requires the dedicated TEST_DATABASE_URL")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	t.Cleanup(cancel)
+	schema, err := testpostgres.CreateSchema(ctx, t, "checkout")
+	if err != nil {
+		t.Fatalf("create isolated checkout schema: %v", err)
+	}
+	if err = schema.ApplyOfficialMigrations(ctx); err != nil {
+		t.Fatalf("apply official migrations to checkout schema: %v", err)
+	}
+	pool, err := schema.OpenPool(ctx)
+	if err != nil {
+		t.Fatalf("open isolated checkout pool: %v", err)
+	}
+	fixtureID, err := testpostgres.NewFixtureID()
+	if err != nil {
+		t.Fatal("create unique checkout fixture identifier")
+	}
+	suffix := strings.ReplaceAll(fixtureID, "-", "")
 	var category, material, color, product, variant, user, session, address string
-	if e := pool.QueryRow(ctx, `INSERT INTO categories(name,slug) VALUES('Checkout','checkout-'||$1) RETURNING id`, suffix).Scan(&category); e != nil {
-		t.Fatal(e)
+	if err = pool.QueryRow(ctx, `INSERT INTO categories(name,slug) VALUES($1,$2) RETURNING id::text`, "Checkout fixture "+suffix, "checkout-"+suffix).Scan(&category); err != nil {
+		t.Fatalf("insert isolated checkout category: %v", err)
 	}
-	if e := pool.QueryRow(ctx, `INSERT INTO materials(code,name) VALUES('CO-'||$1,'Material Checkout '||$1) RETURNING id`, suffix).Scan(&material); e != nil {
-		t.Fatal(e)
+	if err = pool.QueryRow(ctx, `INSERT INTO materials(code,name) VALUES($1,$2) RETURNING id::text`, "CO-"+suffix, "Checkout material "+suffix).Scan(&material); err != nil {
+		t.Fatalf("insert isolated checkout material: %v", err)
 	}
-	if e := pool.QueryRow(ctx, `INSERT INTO colors(slug,name,hex_code) VALUES('checkout-'||$1,'Cor Checkout '||$1,'#112233') RETURNING id`, suffix).Scan(&color); e != nil {
-		t.Fatal(e)
+	if err = pool.QueryRow(ctx, `INSERT INTO colors(slug,name,hex_code) VALUES($1,$2,'#112233') RETURNING id::text`, "checkout-"+suffix, "Checkout color "+suffix).Scan(&color); err != nil {
+		t.Fatalf("insert isolated checkout color: %v", err)
 	}
-	if e := pool.QueryRow(ctx, `INSERT INTO products(category_id,slug,name,description,status,production_type) VALUES($1,'checkout-product-'||$2,'Produto Checkout','Descrição original','active','stocked') RETURNING id`, category, suffix).Scan(&product); e != nil {
-		t.Fatal(e)
+	if err = pool.QueryRow(ctx, `INSERT INTO products(category_id,slug,name,description,status,production_type) VALUES($1,$2,$3,'Checkout isolated fixture','active','stocked') RETURNING id::text`, category, "checkout-product-"+suffix, "Checkout product "+suffix).Scan(&product); err != nil {
+		t.Fatalf("insert isolated checkout product: %v", err)
 	}
-	if e := pool.QueryRow(ctx, `INSERT INTO product_variants(product_id,material_id,color_id,sku,price_cents,stock_quantity,status) VALUES($1,$2,$3,'CHK-'||$4,1234,5,'active') RETURNING id`, product, material, color, suffix).Scan(&variant); e != nil {
-		t.Fatal(e)
+	if err = pool.QueryRow(ctx, `INSERT INTO product_variants(product_id,material_id,color_id,sku,price_cents,stock_quantity,status) VALUES($1,$2,$3,$4,1234,5,'active') RETURNING id::text`, product, material, color, "CHK-"+suffix).Scan(&variant); err != nil {
+		t.Fatalf("insert isolated checkout variant: %v", err)
 	}
-	if e := pool.QueryRow(ctx, `INSERT INTO users(email,full_name,email_verified_at) VALUES('checkout-'||$1||'@example.com','Cliente Checkout',now()) RETURNING id`, suffix).Scan(&user); e != nil {
-		t.Fatal(e)
+	email := "checkout-" + suffix + "@example.invalid"
+	if err = pool.QueryRow(ctx, `INSERT INTO users(email,full_name,email_verified_at) VALUES($1,$2,now()) RETURNING id::text`, email, "Checkout customer "+suffix).Scan(&user); err != nil {
+		t.Fatalf("insert isolated checkout customer: %v", err)
 	}
-	if e := pool.QueryRow(ctx, `INSERT INTO customer_sessions(user_id,token_hash,csrf_token_hash,expires_at) VALUES($1,repeat('a',64),repeat('b',64),now()+interval '1 hour') RETURNING id`, user).Scan(&session); e != nil {
-		t.Fatal(e)
+	if err = pool.QueryRow(ctx, `INSERT INTO customer_sessions(user_id,token_hash,csrf_token_hash,expires_at) VALUES($1,$2,$3,now()+interval '1 hour') RETURNING id::text`, user, app.Hash("checkout-session-"+fixtureID), app.Hash("checkout-csrf-"+fixtureID)).Scan(&session); err != nil {
+		t.Fatalf("insert isolated checkout session: %v", err)
 	}
-	if e := pool.QueryRow(ctx, `INSERT INTO addresses(user_id,recipient_name,postal_code,street,number,district,city,state_code) VALUES($1,'Cliente Checkout','01001000','Rua Original','10','Centro','São Paulo','SP') RETURNING id`, user).Scan(&address); e != nil {
-		t.Fatal(e)
+	if err = pool.QueryRow(ctx, `INSERT INTO addresses(user_id,recipient_name,postal_code,street,number,district,city,state_code) VALUES($1,$2,'01001000','Original Street','10','Center','Sao Paulo','SP') RETURNING id::text`, user, "Checkout recipient "+suffix).Scan(&address); err != nil {
+		t.Fatalf("insert isolated checkout address: %v", err)
 	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM customer_audit_events WHERE user_id=$1`, user)
-		_, _ = pool.Exec(ctx, `DELETE FROM orders WHERE user_id=$1`, user)
-		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE id=$1`, user)
-		_, _ = pool.Exec(ctx, `DELETE FROM product_variants WHERE id=$1`, variant)
-		_, _ = pool.Exec(ctx, `DELETE FROM products WHERE id=$1`, product)
-		_, _ = pool.Exec(ctx, `DELETE FROM colors WHERE id=$1`, color)
-		_, _ = pool.Exec(ctx, `DELETE FROM materials WHERE id=$1`, material)
-		_, _ = pool.Exec(ctx, `DELETE FROM categories WHERE id=$1`, category)
-	})
+
 	repo := NewCustomerRepository(pool)
 	items := []domain.CartInput{{VariantID: variant, Quantity: 2}}
-	validated, e := repo.ValidateCart(ctx, items)
-	if e != nil || validated.SubtotalCents != 2468 {
-		t.Fatalf("validation=%+v err=%v", validated, e)
+	validated, err := repo.ValidateCart(ctx, items)
+	if err != nil || validated.SubtotalCents != 2468 {
+		t.Fatalf("cart validation subtotal=%d err=%v", validated.SubtotalCents, err)
 	}
-	_, _ = pool.Exec(ctx, `UPDATE product_variants SET price_cents=1500 WHERE id=$1`, variant)
-	order, e := repo.CreateCatalogOrder(ctx, user, session, app.Hash("checkout-key"), items, address)
-	if e != nil {
-		t.Fatal(e)
+	if _, err = pool.Exec(ctx, `UPDATE product_variants SET price_cents=1500 WHERE id=$1`, variant); err != nil {
+		t.Fatalf("update isolated variant price: %v", err)
 	}
-	same, e := repo.CreateCatalogOrder(ctx, user, session, app.Hash("checkout-key"), items, address)
-	if e != nil || same.Reference != order.Reference {
-		t.Fatalf("idempotency=%+v err=%v", same, e)
+	checkoutKey := app.Hash("checkout-key-" + fixtureID)
+	order, err := repo.CreateCatalogOrder(ctx, user, session, checkoutKey, items, address)
+	if err != nil {
+		t.Fatalf("create isolated checkout order: %v", err)
+	}
+	same, err := repo.CreateCatalogOrder(ctx, user, session, checkoutKey, items, address)
+	if err != nil || same.Reference != order.Reference {
+		t.Fatalf("idempotency first=%+v second=%+v err=%v", order, same, err)
 	}
 	var subtotal, line int64
 	var street string
-	_ = pool.QueryRow(ctx, `SELECT o.subtotal_cents,oi.line_total_cents,a.street FROM orders o JOIN order_items oi ON oi.order_id=o.id JOIN order_addresses a ON a.order_id=o.id WHERE o.order_number=$1`, order.Reference).Scan(&subtotal, &line, &street)
-	if subtotal != 3000 || line != 3000 || street != "Rua Original" {
+	if err = pool.QueryRow(ctx, `SELECT o.subtotal_cents,oi.line_total_cents,a.street FROM orders o JOIN order_items oi ON oi.order_id=o.id JOIN order_addresses a ON a.order_id=o.id WHERE o.order_number=$1`, order.Reference).Scan(&subtotal, &line, &street); err != nil {
+		t.Fatalf("read isolated order snapshots: %v", err)
+	}
+	if subtotal != 3000 || line != 3000 || street != "Original Street" {
 		t.Fatalf("snapshot subtotal=%d line=%d street=%s", subtotal, line, street)
 	}
-	_, _ = pool.Exec(ctx, `UPDATE addresses SET street='Rua Alterada' WHERE id=$1`, address)
-	_ = pool.QueryRow(ctx, `SELECT street FROM order_addresses WHERE order_id=(SELECT id FROM orders WHERE order_number=$1)`, order.Reference).Scan(&street)
-	if street != "Rua Original" {
+	if _, err = pool.Exec(ctx, `UPDATE addresses SET street='Changed Street' WHERE id=$1`, address); err != nil {
+		t.Fatalf("update isolated customer address: %v", err)
+	}
+	if err = pool.QueryRow(ctx, `SELECT street FROM order_addresses WHERE order_id=(SELECT id FROM orders WHERE order_number=$1)`, order.Reference).Scan(&street); err != nil {
+		t.Fatalf("read immutable order address snapshot: %v", err)
+	}
+	if street != "Original Street" {
 		t.Fatal("order address changed retroactively")
 	}
-	if _, e = repo.PrepareOrder(ctx, user, order.Reference); !errors.Is(e, app.ErrShippingRequired) {
-		t.Fatalf("shipping err=%v", e)
+	if _, err = repo.PrepareOrder(ctx, user, order.Reference); !errors.Is(err, app.ErrShippingRequired) {
+		t.Fatalf("shipping err=%v", err)
 	}
-	if _, e = repo.ValidateCart(ctx, []domain.CartInput{{VariantID: "00000000-0000-0000-0000-000000000000", Quantity: 1}}); !errors.Is(e, app.ErrInvalidCart) {
-		t.Fatalf("missing variant=%v", e)
+	missingVariantID, err := testpostgres.NewFixtureID()
+	if err != nil {
+		t.Fatal("create absent variant identifier")
 	}
-	_, _ = pool.Exec(ctx, `UPDATE product_variants SET status='inactive' WHERE id=$1`, variant)
-	if _, e = repo.ValidateCart(ctx, items); !errors.Is(e, app.ErrInvalidCart) {
-		t.Fatalf("inactive=%v", e)
+	if _, err = repo.ValidateCart(ctx, []domain.CartInput{{VariantID: missingVariantID, Quantity: 1}}); !errors.Is(err, app.ErrInvalidCart) {
+		t.Fatalf("missing variant=%v", err)
 	}
-	_, _ = pool.Exec(ctx, `UPDATE product_variants SET status='active' WHERE id=$1`, variant)
-	if _, e = repo.ValidateCart(ctx, []domain.CartInput{{VariantID: variant, Quantity: 6}}); !errors.Is(e, app.ErrInsufficientStock) {
-		t.Fatalf("stock=%v", e)
+	if _, err = pool.Exec(ctx, `UPDATE product_variants SET status='inactive' WHERE id=$1`, variant); err != nil {
+		t.Fatalf("deactivate isolated variant: %v", err)
 	}
-	if _, e = repo.ValidateCart(ctx, []domain.CartInput{{VariantID: variant, Quantity: 0}}); !errors.Is(e, app.ErrInvalidCart) {
-		t.Fatalf("quantity=%v", e)
+	if _, err = repo.ValidateCart(ctx, items); !errors.Is(err, app.ErrInvalidCart) {
+		t.Fatalf("inactive variant=%v", err)
 	}
-	var wg sync.WaitGroup
+	if _, err = pool.Exec(ctx, `UPDATE product_variants SET status='active' WHERE id=$1`, variant); err != nil {
+		t.Fatalf("reactivate isolated variant: %v", err)
+	}
+	if _, err = repo.ValidateCart(ctx, []domain.CartInput{{VariantID: variant, Quantity: 6}}); !errors.Is(err, app.ErrInsufficientStock) {
+		t.Fatalf("stock validation=%v", err)
+	}
+	if _, err = repo.ValidateCart(ctx, []domain.CartInput{{VariantID: variant, Quantity: 0}}); !errors.Is(err, app.ErrInvalidCart) {
+		t.Fatalf("quantity validation=%v", err)
+	}
+
+	pool2, err := schema.OpenPoolWithApplicationName(ctx, "checkout-worker-b")
+	if err != nil {
+		t.Fatalf("open independent checkout pool: %v", err)
+	}
+	repo2 := NewCustomerRepository(pool2)
+	start := make(chan struct{})
 	refs := make(chan string, 2)
 	errs := make(chan error, 2)
-	for range 2 {
+	var wg sync.WaitGroup
+	concurrentKey := app.Hash("concurrent-checkout-" + fixtureID)
+	for _, current := range []*CustomerRepository{repo, repo2} {
 		wg.Add(1)
-		go func() {
+		go func(current *CustomerRepository) {
 			defer wg.Done()
-			o, e := repo.CreateCatalogOrder(ctx, user, session, app.Hash("concurrent-key"), []domain.CartInput{{VariantID: variant, Quantity: 1}}, address)
-			refs <- o.Reference
-			errs <- e
-		}()
+			<-start
+			created, createErr := current.CreateCatalogOrder(ctx, user, session, concurrentKey, []domain.CartInput{{VariantID: variant, Quantity: 1}}, address)
+			refs <- created.Reference
+			errs <- createErr
+		}(current)
 	}
+	close(start)
 	wg.Wait()
 	close(refs)
 	close(errs)
-	for e = range errs {
-		if e != nil {
-			t.Fatal(e)
+	for createErr := range errs {
+		if createErr != nil {
+			t.Fatal(createErr)
 		}
 	}
 	first := ""
@@ -118,17 +158,24 @@ func TestCatalogCheckoutIntegration(t *testing.T) {
 		if first == "" {
 			first = ref
 		} else if ref != first {
-			t.Fatalf("concurrent refs %s %s", first, ref)
+			t.Fatal("concurrent idempotent checkouts returned different references")
 		}
 	}
-	_, _ = pool.Exec(ctx, `DELETE FROM addresses WHERE id=$1`, address)
-	before := 0
-	_ = pool.QueryRow(ctx, `SELECT count(*) FROM orders WHERE checkout_key_hash=$1`, app.Hash("rollback-key")).Scan(&before)
-	if _, e = repo.CreateCatalogOrder(ctx, user, session, app.Hash("rollback-key"), items, address); !errors.Is(e, app.ErrInvalidCart) {
-		t.Fatalf("rollback error=%v", e)
+	if _, err = pool.Exec(ctx, `DELETE FROM addresses WHERE id=$1`, address); err != nil {
+		t.Fatalf("delete only the isolated fixture address: %v", err)
 	}
-	after := 0
-	_ = pool.QueryRow(ctx, `SELECT count(*) FROM orders WHERE checkout_key_hash=$1`, app.Hash("rollback-key")).Scan(&after)
+	rollbackKey := app.Hash("rollback-checkout-" + fixtureID)
+	var before int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM orders WHERE checkout_key_hash=$1`, rollbackKey).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = repo.CreateCatalogOrder(ctx, user, session, rollbackKey, items, address); !errors.Is(err, app.ErrInvalidCart) {
+		t.Fatalf("rollback error=%v", err)
+	}
+	var after int
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM orders WHERE checkout_key_hash=$1`, rollbackKey).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
 	if before != 0 || after != 0 {
 		t.Fatal("failed checkout left an order")
 	}
@@ -137,28 +184,28 @@ func TestCatalogCheckoutIntegration(t *testing.T) {
 func TestCustomOrderCheckoutPreservesApprovedPriceAndRequiresShipping(t *testing.T) {
 	ctx := context.Background()
 	f := newConversionFixture(t)
-	order, e := f.repo.ConvertQuote(ctx, f.userID, f.reference, f.sessionID)
-	if e != nil {
-		t.Fatal(e)
+	order, err := f.repo.ConvertQuote(ctx, f.userID, f.reference, f.sessionID)
+	if err != nil {
+		t.Fatal(err)
 	}
 	var address string
-	e = f.pool.QueryRow(ctx, `INSERT INTO addresses(user_id,recipient_name,postal_code,street,number,district,city,state_code) VALUES($1,'Cliente','01001000','Rua do Orçamento','5','Centro','São Paulo','SP') RETURNING id`, f.userID).Scan(&address)
-	if e != nil {
-		t.Fatal(e)
+	err = f.pool.QueryRow(ctx, `INSERT INTO addresses(user_id,recipient_name,postal_code,street,number,district,city,state_code) VALUES($1,'Checkout fixture','01001000','Quote Street','5','Center','Sao Paulo','SP') RETURNING id::text`, f.userID).Scan(&address)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, e = f.pool.Exec(ctx, `UPDATE orders SET shipping_included=false WHERE order_number=$1`, order.Reference); e != nil {
-		t.Fatal(e)
+	if _, err = f.pool.Exec(ctx, `UPDATE orders SET shipping_included=false WHERE order_number=$1`, order.Reference); err != nil {
+		t.Fatal(err)
 	}
-	if e = f.repo.UpdateOrderAddress(ctx, f.userID, order.Reference, address); e != nil {
-		t.Fatal(e)
+	if err = f.repo.UpdateOrderAddress(ctx, f.userID, order.Reference, address); err != nil {
+		t.Fatal(err)
 	}
-	if _, e = f.repo.PrepareOrder(ctx, f.userID, order.Reference); !errors.Is(e, app.ErrShippingRequired) {
-		t.Fatalf("shipping=%v", e)
+	if _, err = f.repo.PrepareOrder(ctx, f.userID, order.Reference); !errors.Is(err, app.ErrShippingRequired) {
+		t.Fatalf("shipping=%v", err)
 	}
 	var subtotal, total int64
 	var readiness string
-	e = f.pool.QueryRow(ctx, `SELECT subtotal_cents,total_cents,payment_readiness FROM orders WHERE order_number=$1`, order.Reference).Scan(&subtotal, &total, &readiness)
-	if e != nil || subtotal != 1001 || total != 1001 || readiness != "awaiting_shipping_quote" {
-		t.Fatalf("subtotal=%d total=%d readiness=%s err=%v", subtotal, total, readiness, e)
+	err = f.pool.QueryRow(ctx, `SELECT subtotal_cents,total_cents,payment_readiness FROM orders WHERE order_number=$1`, order.Reference).Scan(&subtotal, &total, &readiness)
+	if err != nil || subtotal != 1001 || total != 1001 || readiness != "awaiting_shipping_quote" {
+		t.Fatalf("subtotal=%d total=%d readiness=%s err=%v", subtotal, total, readiness, err)
 	}
 }

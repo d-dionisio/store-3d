@@ -11,52 +11,14 @@ import (
 
 	app "example.com/loja-3d/backend/internal/application/production"
 	domain "example.com/loja-3d/backend/internal/domain/production"
-	"github.com/jackc/pgx/v5/pgxpool"
+	testpostgres "example.com/loja-3d/backend/internal/testsupport/postgres"
 )
 
-// This test never creates a database or applies migrations. It only uses the
-// explicitly isolated loja_3d_test database and rolls every fixture back.
+// This test runs against official migrations in a UUID-owned schema and rolls
+// fixture writes back before TestSupport drops only that schema.
 func TestProductionCostsPostgreSQL(t *testing.T) {
-	dsn := strings.TrimSpace(testDatabaseURL())
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL is required")
-	}
-	config, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		t.Fatal("invalid TEST_DATABASE_URL; credentials are hidden")
-	}
-	if strings.EqualFold(config.ConnConfig.Database, "loja_3d") || config.ConnConfig.Database != "loja_3d_test" {
-		t.Fatal("refusing any database except loja_3d_test")
-	}
-	host := strings.ToLower(config.ConnConfig.Host)
-	if host != "localhost" && host != "127.0.0.1" && host != "::1" || config.ConnConfig.Port != 5432 {
-		t.Fatal("test database must use loopback:5432")
-	}
-	if dev := strings.TrimSpace(testDevelopmentDatabaseURL()); dev != "" && dev == dsn {
-		t.Fatal("TEST_DATABASE_URL must differ from DATABASE_URL")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	pool, err := pgxpool.NewWithConfig(ctx, config)
-	if err != nil {
-		t.Fatal("connect to isolated test database")
-	}
+	pool, ctx := newProductionIntegrationPool(t, "costs")
 	defer pool.Close()
-	var currentDB string
-	if err = pool.QueryRow(ctx, `SELECT current_database()`).Scan(&currentDB); err != nil {
-		t.Fatal(err)
-	}
-	if currentDB != "loja_3d_test" {
-		t.Fatalf("refusing connected database %q", currentDB)
-	}
-	var migration int
-	var dirty bool
-	if err = pool.QueryRow(ctx, `SELECT version,dirty FROM schema_migrations`).Scan(&migration, &dirty); err != nil {
-		t.Fatal("could not verify migration state")
-	}
-	if migration != 28 || dirty {
-		t.Fatalf("expected migration 28 clean; got version=%d dirty=%v", migration, dirty)
-	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -87,10 +49,10 @@ func TestProductionCostsPostgreSQL(t *testing.T) {
 	installAuditFailure := func() (string, string) {
 		name := "cost_audit_reject_" + strings.ReplaceAll(strings.TrimPrefix(suffix, "cost-test-"), "-", "_")
 		functionName, triggerName := name+"_fn", name+"_trg"
-		if _, createErr := tx.Exec(ctx, fmt.Sprintf(`CREATE FUNCTION public.%s() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test audit sink failure' USING ERRCODE='23514'; END $$`, functionName)); createErr != nil {
+		if _, createErr := tx.Exec(ctx, fmt.Sprintf(`CREATE FUNCTION %s() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test audit sink failure' USING ERRCODE='23514'; END $$`, functionName)); createErr != nil {
 			t.Fatal("create scoped audit failure function:", createErr)
 		}
-		if _, createErr := tx.Exec(ctx, fmt.Sprintf(`CREATE TRIGGER %s BEFORE INSERT ON admin_audit_events FOR EACH ROW WHEN (NEW.action IN ('production.cost_profile.save','production.cost_snapshot.estimate','production.cost_snapshot.actual')) EXECUTE FUNCTION public.%s()`, triggerName, functionName)); createErr != nil {
+		if _, createErr := tx.Exec(ctx, fmt.Sprintf(`CREATE TRIGGER %s BEFORE INSERT ON admin_audit_events FOR EACH ROW WHEN (NEW.action IN ('production.cost_profile.save','production.cost_snapshot.estimate','production.cost_snapshot.actual')) EXECUTE FUNCTION %s()`, triggerName, functionName)); createErr != nil {
 			t.Fatal("create scoped audit failure trigger:", createErr)
 		}
 		return triggerName, functionName
@@ -99,7 +61,7 @@ func TestProductionCostsPostgreSQL(t *testing.T) {
 		if _, dropErr := tx.Exec(ctx, fmt.Sprintf(`DROP TRIGGER %s ON admin_audit_events`, triggerName)); dropErr != nil {
 			t.Fatal("drop scoped audit failure trigger:", dropErr)
 		}
-		if _, dropErr := tx.Exec(ctx, fmt.Sprintf(`DROP FUNCTION public.%s()`, functionName)); dropErr != nil {
+		if _, dropErr := tx.Exec(ctx, fmt.Sprintf(`DROP FUNCTION %s()`, functionName)); dropErr != nil {
 			t.Fatal("drop scoped audit failure function:", dropErr)
 		}
 	}
@@ -290,7 +252,11 @@ func TestProductionCostsPostgreSQL(t *testing.T) {
 		t.Fatalf("estimate did not use current profile and spool price: %+v err=%v", estimate, err)
 	}
 	badContext := estimateContext
-	badContext.PrinterID = "00000000-0000-4000-8000-000000000000" // FK failure occurs inside the snapshot transaction.
+	badPrinterID, idErr := testpostgres.NewFixtureID()
+	if idErr != nil {
+		t.Fatal("create unique invalid printer reference:", idErr)
+	}
+	badContext.PrinterID = badPrinterID // FK failure occurs inside the snapshot transaction.
 	if _, err = repo.SaveRunCostSnapshot(ctx, badContext, estimate, adminID, app.CostAuditContext{}); err == nil {
 		t.Fatal("expected invalid printer FK to abort snapshot registration")
 	}

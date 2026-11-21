@@ -11,12 +11,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	mathrand "math/rand/v2"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -31,6 +34,37 @@ type OutboxCipher struct {
 
 func NewOutboxCipher(encoded string, version int16) (*OutboxCipher, error) {
 	return NewOutboxKeyring(version, map[int16]string{version: encoded})
+}
+
+// ParseOutboxKeyring applies identical parsing rules in the API and worker.
+// An empty active version retains the legacy version-1 default.
+func ParseOutboxKeyring(activeVersion, activeKey, historical string) (*OutboxCipher, error) {
+	version := int64(1)
+	var err error
+	if strings.TrimSpace(activeVersion) != "" {
+		version, err = strconv.ParseInt(strings.TrimSpace(activeVersion), 10, 16)
+		if err != nil || version < 1 {
+			return nil, errors.New("invalid email outbox key version")
+		}
+	}
+	keys := map[int16]string{int16(version): activeKey}
+	if strings.TrimSpace(historical) != "" {
+		for _, entry := range strings.Split(historical, ",") {
+			parts := strings.SplitN(strings.TrimSpace(entry), ":", 2)
+			if len(parts) != 2 {
+				return nil, errors.New("invalid historical email outbox key entry")
+			}
+			oldVersion, parseErr := strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 16)
+			if parseErr != nil || oldVersion < 1 || strings.TrimSpace(parts[1]) == "" {
+				return nil, errors.New("invalid historical email outbox key entry")
+			}
+			if _, exists := keys[int16(oldVersion)]; exists {
+				return nil, errors.New("duplicate email outbox key version")
+			}
+			keys[int16(oldVersion)] = strings.TrimSpace(parts[1])
+		}
+	}
+	return NewOutboxKeyring(int16(version), keys)
 }
 func NewOutboxKeyring(active int16, encoded map[int16]string) (*OutboxCipher, error) {
 	if active < 1 || len(encoded) == 0 {
@@ -149,7 +183,21 @@ type Item struct {
 }
 
 func (o *Outbox) Claim(ctx context.Context, limit int) ([]Item, error) {
-	rows, e := o.pool.Query(ctx, `WITH quota_lock AS (SELECT pg_advisory_xact_lock(1280269391)), candidates AS (SELECT e.id FROM email_outbox e CROSS JOIN quota_lock WHERE e.expires_at>now() AND ((e.status IN('pending','retry') AND e.next_attempt_at<=now()) OR (e.status='processing' AND e.locked_at<now()-interval '5 minutes')) AND NOT EXISTS(SELECT 1 FROM email_suppressions s WHERE s.recipient_hash=e.recipient_hash) AND (SELECT count(*) FROM email_outbox WHERE (provider_message_id IS NOT NULL AND processed_at>=date_trunc('day',now())) OR (status='processing' AND locked_at>=date_trunc('day',now())))<100 ORDER BY e.created_at FOR UPDATE OF e SKIP LOCKED LIMIT $1) UPDATE email_outbox e SET status='processing',locked_at=now(),attempts=attempts+1 FROM candidates c WHERE e.id=c.id RETURNING e.id,e.message_type,e.idempotency_key,e.payload_ciphertext,e.key_version,e.attempts,e.expires_at`, limit)
+	if limit <= 0 {
+		return nil, errors.New("email outbox claim limit must be positive")
+	}
+	tx, e := o.pool.Begin(ctx)
+	if e != nil {
+		return nil, e
+	}
+	defer tx.Rollback(ctx)
+	// A worker may die on its last allowed attempt. Close exhausted stale
+	// claims instead of leaving them stuck or violating attempts <= 8.
+	_, e = tx.Exec(ctx, `UPDATE email_outbox SET status='failed',processed_at=now(),locked_at=NULL,last_error_code='attempts_exhausted' WHERE attempts>=8 AND (status IN('pending','retry') OR (status='processing' AND (locked_at IS NULL OR locked_at<now()-interval '5 minutes'))) `)
+	if e != nil {
+		return nil, e
+	}
+	rows, e := tx.Query(ctx, `WITH quota_lock AS (SELECT pg_advisory_xact_lock(1280269391)), candidates AS (SELECT e.id FROM email_outbox e CROSS JOIN quota_lock WHERE e.expires_at>now() AND ((e.status IN('pending','retry') AND e.next_attempt_at<=now() AND e.attempts<8) OR (e.status='processing' AND (e.locked_at IS NULL OR e.locked_at<now()-interval '5 minutes') AND e.attempts<8)) AND NOT EXISTS(SELECT 1 FROM email_suppressions s WHERE s.recipient_hash=e.recipient_hash) AND (SELECT count(*) FROM email_outbox WHERE (provider_message_id IS NOT NULL AND processed_at>=date_trunc('day',now())) OR (status='processing' AND locked_at>=date_trunc('day',now())))<100 ORDER BY e.created_at FOR UPDATE OF e SKIP LOCKED LIMIT $1) UPDATE email_outbox e SET status='processing',locked_at=now(),attempts=attempts+1 FROM candidates c WHERE e.id=c.id RETURNING e.id,e.message_type,e.idempotency_key,e.payload_ciphertext,e.key_version,e.attempts,e.expires_at`, limit)
 	if e != nil {
 		return nil, e
 	}
@@ -162,7 +210,14 @@ func (o *Outbox) Claim(ctx context.Context, limit int) ([]Item, error) {
 		}
 		result = append(result, i)
 	}
-	return result, rows.Err()
+	if e = rows.Err(); e != nil {
+		return nil, e
+	}
+	rows.Close()
+	if e = tx.Commit(ctx); e != nil {
+		return nil, e
+	}
+	return result, nil
 }
 func (o *Outbox) ExpireDue(ctx context.Context) (int64, error) {
 	tag, e := o.pool.Exec(ctx, `UPDATE email_outbox SET status='expired',processed_at=now(),locked_at=NULL,last_error_code='expired' WHERE expires_at<=now() AND status IN('pending','retry','processing')`)
@@ -238,16 +293,47 @@ func (o *Outbox) Pending(ctx context.Context) (int64, error) {
 }
 func IsPermanent(err error) bool { var target PermanentError; return errors.As(err, &target) }
 
+func errorClass(err error) string {
+	var postgresErr *pgconn.PgError
+	if errors.As(err, &postgresErr) {
+		return "postgres_" + postgresErr.Code
+	}
+	var timeout interface{ Timeout() bool }
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		return "network_timeout"
+	}
+	return fmt.Sprintf("%T", err)
+}
+
 type Worker struct {
-	Outbox                           *Outbox
+	Outbox                           OutboxProcessor
 	Sender                           EmailSender
 	From, ReplyTo                    string
 	Batch                            int
 	Rate                             time.Duration
 	MessageRetention, EventRetention time.Duration
+	Logger                           *slog.Logger
+}
+
+type OutboxProcessor interface {
+	Claim(context.Context, int) ([]Item, error)
+	Cleanup(context.Context, time.Duration, time.Duration) (int64, int64, error)
+	ExpireDue(context.Context) (int64, error)
+	Expired(context.Context, string) error
+	Failed(context.Context, Item, string, bool) error
+	Message(Item, string, string) (Message, error)
+	Sent(context.Context, string, string) error
+	SuppressPending(context.Context) (int64, error)
 }
 
 func (w Worker) Run(ctx context.Context) error {
+	if w.Outbox == nil || w.Sender == nil {
+		return errors.New("email worker requires outbox and sender")
+	}
+	logger := w.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	if w.Batch <= 0 {
 		w.Batch = 5
 	}
@@ -264,37 +350,81 @@ func (w Worker) Run(ctx context.Context) error {
 	cleanup := time.NewTicker(time.Hour)
 	defer ticker.Stop()
 	defer cleanup.Stop()
+	logger.Info("transactional email worker started", "batch", w.Batch, "poll_interval", w.Rate)
 	for {
 		select {
 		case <-ctx.Done():
+			logger.Info("transactional email worker stopped", "reason", "context_cancelled")
 			return nil
 		case <-cleanup.C:
-			_, _, _ = w.Outbox.Cleanup(ctx, w.MessageRetention, w.EventRetention)
+			messages, events, err := w.Outbox.Cleanup(ctx, w.MessageRetention, w.EventRetention)
+			if err != nil {
+				logger.Error("email outbox retention cleanup failed", "error_class", errorClass(err))
+			} else if messages > 0 || events > 0 {
+				logger.Info("email outbox retention cleanup completed", "messages_removed", messages, "events_removed", events)
+			}
 		case <-ticker.C:
-			_, _ = w.Outbox.ExpireDue(ctx)
-			_, _ = w.Outbox.SuppressPending(ctx)
+			expired, err := w.Outbox.ExpireDue(ctx)
+			if err != nil {
+				logger.Error("email outbox expiration failed", "error_class", errorClass(err))
+			} else if expired > 0 {
+				logger.Info("expired email outbox messages", "count", expired)
+			}
+			suppressed, err := w.Outbox.SuppressPending(ctx)
+			if err != nil {
+				logger.Error("email suppression processing failed", "error_class", errorClass(err))
+			} else if suppressed > 0 {
+				logger.Info("suppressed email outbox messages", "count", suppressed)
+			}
 			items, e := w.Outbox.Claim(ctx, w.Batch)
 			if e != nil {
+				logger.Error("email outbox claim failed", "error_class", errorClass(e))
 				continue
 			}
+			logger.Info("email outbox claim completed", "count", len(items))
 			for _, item := range items {
-				if time.Now().After(item.ExpiresAt) {
-					_ = w.Outbox.Expired(ctx, item.ID)
+				if !time.Now().Before(item.ExpiresAt) {
+					if err := w.Outbox.Expired(ctx, item.ID); err != nil {
+						logger.Error("expired email state update failed", "message_type", item.Kind, "error_class", errorClass(err))
+					} else {
+						logger.Info("email message expired before delivery", "message_type", item.Kind)
+					}
 					continue
 				}
 				message, e := w.Outbox.Message(item, w.From, w.ReplyTo)
 				if e != nil {
-					_ = w.Outbox.Failed(ctx, item, "decrypt_or_render", true)
+					if updateErr := w.Outbox.Failed(ctx, item, "decrypt_or_render", true); updateErr != nil {
+						logger.Error("email failure state update failed", "message_type", item.Kind, "reason", "decrypt_or_render", "error_class", errorClass(updateErr))
+					} else {
+						logger.Error("email decrypt or render failed", "message_type", item.Kind, "key_version", item.KeyVersion, "attempt", item.Attempts)
+					}
+					continue
+				}
+				// Recheck after rendering so an item that expired during that work
+				// is not sent to the provider.
+				if !time.Now().Before(item.ExpiresAt) {
+					if err := w.Outbox.Expired(ctx, item.ID); err != nil {
+						logger.Error("expired email state update failed", "message_type", item.Kind, "error_class", errorClass(err))
+					}
 					continue
 				}
 				sendCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 				provider, e := w.Sender.Send(sendCtx, message)
 				cancel()
 				if e != nil {
-					_ = w.Outbox.Failed(ctx, item, "provider_error", IsPermanent(e))
+					permanent := IsPermanent(e)
+					if updateErr := w.Outbox.Failed(ctx, item, "provider_error", permanent); updateErr != nil {
+						logger.Error("email failure state update failed", "message_type", item.Kind, "reason", "provider_error", "permanent", permanent, "attempt", item.Attempts, "error_class", errorClass(updateErr))
+					} else {
+						logger.Error("email provider send failed", "message_type", item.Kind, "reason", "provider_error", "permanent", permanent, "attempt", item.Attempts)
+					}
 					continue
 				}
-				_ = w.Outbox.Sent(ctx, item.ID, provider)
+				if e = w.Outbox.Sent(ctx, item.ID, provider); e != nil {
+					logger.Error("email sent state update failed", "message_type", item.Kind, "attempt", item.Attempts, "error_class", errorClass(e))
+					continue
+				}
+				logger.Info("email message sent", "message_type", item.Kind, "attempt", item.Attempts)
 			}
 		}
 	}

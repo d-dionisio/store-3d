@@ -15,27 +15,26 @@ import (
 	customerapp "example.com/loja-3d/backend/internal/application/customer"
 	identityapp "example.com/loja-3d/backend/internal/application/identity"
 	"example.com/loja-3d/backend/internal/infrastructure/mail"
-	"github.com/jackc/pgx/v5/pgxpool"
+	testpostgres "example.com/loja-3d/backend/internal/testsupport/postgres"
 )
 
 func TestAuthenticationTokenAndEmailAreAtomic(t *testing.T) {
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
+	if _, ok := os.LookupEnv(testpostgres.EnvDatabaseURL); !ok {
 		t.Skip("TEST_DATABASE_URL is not configured")
 	}
-	config, err := pgxpool.ParseConfig(dsn)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	t.Cleanup(cancel)
+	schema, err := testpostgres.CreateSchema(ctx, t, "email_atomicity")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("create isolated email atomicity schema: %v", err)
 	}
-	if !strings.HasSuffix(strings.ToLower(config.ConnConfig.Database), "_test") {
-		t.Fatal("requires *_test database")
+	if err = schema.ApplyOfficialMigrations(ctx); err != nil {
+		t.Fatalf("apply official migrations to email atomicity schema: %v", err)
 	}
-	pool, err := pgxpool.NewWithConfig(context.Background(), config)
+	pool, err := schema.OpenPool(ctx)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("open isolated email atomicity pool: %v", err)
 	}
-	defer pool.Close()
-	ctx := context.Background()
 	cipher, err := mail.NewOutboxCipher(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{8}, 32)), 1)
 	if err != nil {
 		t.Fatal(err)
@@ -53,12 +52,6 @@ func TestAuthenticationTokenAndEmailAreAtomic(t *testing.T) {
 		sum := sha256.Sum256([]byte(email + ":" + value))
 		return hex.EncodeToString(sum[:])
 	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM email_outbox WHERE recipient_hash=$1`, recipientHash)
-		_, _ = pool.Exec(ctx, `DELETE FROM customer_magic_links WHERE lower(email)=lower($1)`, email)
-		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE lower(email)=lower($1)`, email)
-		_, _ = pool.Exec(ctx, `DELETE FROM users WHERE lower(email)=lower($1)`, failedEmail)
-	})
 	if _, err = identityRepo.RegisterCustomerWithEmail(ctx, "Rollback Test", failedEmail, strings.Repeat("x", 60), tokenHash("failed"), time.Now().Add(time.Hour), identityapp.EmailIntent{To: "invalid", Kind: "verify_email", Link: "https://example.test/verify?token=failed"}); err == nil {
 		t.Fatal("expected registration enqueue failure")
 	}

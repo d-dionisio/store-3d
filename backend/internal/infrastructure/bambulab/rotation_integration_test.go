@@ -4,38 +4,40 @@ import (
 	"context"
 	"encoding/base64"
 	"os"
-	"strings"
 	"testing"
+	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	testpostgres "example.com/loja-3d/backend/internal/testsupport/postgres"
 )
 
 func TestRotateCredentialsPostgreSQLTransaction(t *testing.T) {
-	dsn := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
-	if dsn == "" {
+	if _, ok := os.LookupEnv(testpostgres.EnvDatabaseURL); !ok {
 		t.Skip("TEST_DATABASE_URL is not configured")
 	}
-	cfg, err := pgxpool.ParseConfig(dsn)
-	if err != nil || !strings.HasSuffix(strings.ToLower(cfg.ConnConfig.Database), "_test") || strings.EqualFold(cfg.ConnConfig.Database, "loja_3d") {
-		t.Fatal("credential rotation integration test requires a dedicated *_test database")
-	}
-	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	t.Cleanup(cancel)
+	schema, err := testpostgres.CreateSchema(ctx, t, "bambulab_rotation")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("create isolated Bambu Lab rotation schema: %v", err)
 	}
-	defer pool.Close()
-	ctx := context.Background()
+	if err = schema.ApplyOfficialMigrations(ctx); err != nil {
+		t.Fatalf("apply official migrations to Bambu Lab rotation schema: %v", err)
+	}
+	pool, err := schema.OpenPool(ctx)
+	if err != nil {
+		t.Fatalf("open isolated Bambu Lab rotation pool: %v", err)
+	}
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
 	var adminID string
-	if err = tx.QueryRow(ctx, `SELECT id FROM admin_users ORDER BY created_at LIMIT 1`).Scan(&adminID); err != nil {
-		t.Skip("test database has no administrative fixture")
+	if err = tx.QueryRow(ctx, `INSERT INTO admin_users(email,full_name,password_hash,role) VALUES('bambulab-rotation@example.test','Rotation fixture',repeat('x',60),'production_manager') RETURNING id::text`).Scan(&adminID); err != nil {
+		t.Fatalf("insert isolated administrator fixture: %v", err)
 	}
 	var printerID string
-	if err = tx.QueryRow(ctx, `INSERT INTO printers(code,name,manufacturer,model,build_width_mm,build_depth_mm,build_height_mm)VALUES('BAMBU-ROTATION-TEST','Bambu rotation test','Bambu Lab','A1',256,256,256)RETURNING id`).Scan(&printerID); err != nil {
+	if err = tx.QueryRow(ctx, `INSERT INTO printers(code,name,manufacturer,model,build_width_mm,build_depth_mm,build_height_mm)VALUES('BAMBU-ROTATION-TEST','Bambu rotation test','Bambu Lab','A1',256,256,256)RETURNING id::text`).Scan(&printerID); err != nil {
 		t.Fatal(err)
 	}
 	oldKey := base64.StdEncoding.EncodeToString([]byte("01234567890123456789012345678901"))

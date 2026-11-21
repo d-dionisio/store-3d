@@ -99,20 +99,8 @@ func main() {
 	var identityMailer identityapp.Mailer = mail.Unavailable{}
 	var customerMailer customerapp.Mailer = mail.Unavailable{}
 	var emailOutbox *mail.Outbox
-	emailKeyVersion, emailVersionErr := strconv.ParseInt(envOrDefault("EMAIL_OUTBOX_KEY_VERSION", "1"), 10, 16)
-	emailKeys := map[int16]string{int16(emailKeyVersion): os.Getenv("EMAIL_OUTBOX_ENCRYPTION_KEY")}
-	for _, entry := range strings.Split(os.Getenv("EMAIL_OUTBOX_DECRYPTION_KEYS"), ",") {
-		parts := strings.SplitN(strings.TrimSpace(entry), ":", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		version, parseKeyErr := strconv.ParseInt(parts[0], 10, 16)
-		if parseKeyErr == nil && version > 0 && parts[1] != "" {
-			emailKeys[int16(version)] = parts[1]
-		}
-	}
-	emailCipher, emailCipherErr := mail.NewOutboxKeyring(int16(emailKeyVersion), emailKeys)
-	if emailVersionErr == nil && emailCipherErr == nil {
+	emailCipher, emailCipherErr := mail.ParseOutboxKeyring(os.Getenv("EMAIL_OUTBOX_KEY_VERSION"), os.Getenv("EMAIL_OUTBOX_ENCRYPTION_KEY"), os.Getenv("EMAIL_OUTBOX_DECRYPTION_KEYS"))
+	if emailCipherErr == nil {
 		emailOutbox = mail.NewOutbox(pool, emailCipher)
 		customerMailer = emailOutbox
 		identityMailer = emailOutbox
@@ -120,6 +108,9 @@ func main() {
 		developmentMailer := mail.Development{}
 		customerMailer = developmentMailer
 		identityMailer = developmentMailer
+	} else if appEnv == "homologation" {
+		slog.Error("transactional email outbox encryption configuration is invalid")
+		os.Exit(1)
 	}
 	var identityService *identityapp.Service
 	mfaVersionValue, versionErr := strconv.ParseInt(envOrDefault("AUTH_MFA_KEY_VERSION", "1"), 10, 16)

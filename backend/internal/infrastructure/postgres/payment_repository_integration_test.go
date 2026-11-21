@@ -3,28 +3,26 @@ package postgres
 import (
 	"context"
 	"errors"
-	paymentapp "example.com/loja-3d/backend/internal/application/payment"
-	domain "example.com/loja-3d/backend/internal/domain/payment"
 	"sync"
 	"testing"
 	"time"
+
+	paymentapp "example.com/loja-3d/backend/internal/application/payment"
+	domain "example.com/loja-3d/backend/internal/domain/payment"
+	testpostgres "example.com/loja-3d/backend/internal/testsupport/postgres"
 )
 
+// paymentFixture inherits conversionFixture's UUID schema, official migrations,
+// schema-only search_path, and schema-scoped cleanup. It deliberately performs
+// no table-level cleanup against shared or preexisting rows.
 func paymentFixture(t *testing.T) (conversionFixture, string, *PaymentRepository) {
 	t.Helper()
 	ctx := context.Background()
 	f := newConversionFixture(t)
-	_, _ = f.pool.Exec(ctx, `DELETE FROM payment_refunds WHERE payment_id IN (SELECT payment_id FROM payment_attempts WHERE external_payment_id IN ('900001','900002'))`)
-	_, _ = f.pool.Exec(ctx, `DELETE FROM payments WHERE id IN (SELECT payment_id FROM payment_attempts WHERE external_payment_id IN ('900001','900002'))`)
 	order, e := f.repo.ConvertQuote(ctx, f.userID, f.reference, f.sessionID)
 	if e != nil {
 		t.Fatal(e)
 	}
-	t.Cleanup(func() {
-		_, _ = f.pool.Exec(ctx, `DELETE FROM payment_webhook_events WHERE external_event_id LIKE $1`, "%"+order.Reference)
-		_, _ = f.pool.Exec(ctx, `DELETE FROM payment_refunds WHERE payment_id IN (SELECT id FROM payments WHERE order_id=(SELECT id FROM orders WHERE order_number=$1))`, order.Reference)
-		_, _ = f.pool.Exec(ctx, `DELETE FROM payments WHERE order_id=(SELECT id FROM orders WHERE order_number=$1)`, order.Reference)
-	})
 	return f, order.Reference, NewPaymentRepository(f.pool)
 }
 func readyPaymentOrder(t *testing.T, f conversionFixture, ref string) {
@@ -45,44 +43,95 @@ func TestPIXReservationReadinessOwnershipAndConcurrency(t *testing.T) {
 		t.Fatalf("not ready err=%v", e)
 	}
 	readyPaymentOrder(t, f, ref)
-	if _, _, e := r.ReservePIX(ctx, "00000000-0000-0000-0000-000000000000", ref, time.Now().Add(time.Hour)); !errors.Is(e, paymentapp.ErrNotFound) {
+	nonOwnerID, err := testpostgres.NewFixtureID()
+	if err != nil {
+		t.Fatal("create unique non-owner identifier")
+	}
+	if _, _, e := r.ReservePIX(ctx, nonOwnerID, ref, time.Now().Add(time.Hour)); !errors.Is(e, paymentapp.ErrNotFound) {
 		t.Fatalf("ownership err=%v", e)
 	}
+	poolA, err := f.schema.OpenPoolWithApplicationName(ctx, "payment-pix-a")
+	if err != nil {
+		t.Fatalf("open first independent payment pool: %v", err)
+	}
+	poolB, err := f.schema.OpenPoolWithApplicationName(ctx, "payment-pix-b")
+	if err != nil {
+		t.Fatalf("open second independent payment pool: %v", err)
+	}
+	observer, err := f.schema.OpenPoolWithApplicationName(ctx, "payment-pix-observer")
+	if err != nil {
+		t.Fatalf("open payment concurrency observer: %v", err)
+	}
+	var pidA, pidB int
+	if err = poolA.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pidA); err != nil {
+		t.Fatal("identify first PostgreSQL backend:", err)
+	}
+	if err = poolB.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pidB); err != nil {
+		t.Fatal("identify second PostgreSQL backend:", err)
+	}
+	if pidA == pidB {
+		t.Fatalf("payment concurrency participants unexpectedly share backend pid=%d", pidA)
+	}
+	repoA, repoB := NewPaymentRepository(poolA), NewPaymentRepository(poolB)
+	lock, err := observer.Begin(ctx)
+	if err != nil {
+		t.Fatal("begin deterministic payment concurrency barrier:", err)
+	}
+	t.Cleanup(func() { _ = lock.Rollback(ctx) })
+	var orderID string
+	if err = lock.QueryRow(ctx, `SELECT id::text FROM orders WHERE order_number=$1 FOR UPDATE`, ref).Scan(&orderID); err != nil {
+		t.Fatal("lock isolated payment order:", err)
+	}
 	var wg sync.WaitGroup
-	ids := make(chan string, 2)
-	errs := make(chan error, 2)
-	for range 2 {
+	results := make(chan struct {
+		attemptID string
+		err       error
+	}, 2)
+	start := make(chan struct{})
+	for _, repo := range []*PaymentRepository{repoA, repoB} {
 		wg.Add(1)
-		go func() {
+		go func(repo *PaymentRepository) {
 			defer wg.Done()
-			req, existing, e := r.ReservePIX(ctx, f.userID, ref, time.Now().Add(time.Hour))
+			<-start
+			req, existing, e := repo.ReservePIX(ctx, f.userID, ref, time.Now().Add(time.Hour))
+			result := struct {
+				attemptID string
+				err       error
+			}{err: e}
 			if existing != nil {
-				ids <- existing.AttemptID
+				result.attemptID = existing.AttemptID
 			} else {
-				ids <- req.AttemptID
+				result.attemptID = req.AttemptID
 			}
-			errs <- e
-		}()
+			results <- result
+		}(repo)
+	}
+	close(start)
+	waitForLockWaiters(t, ctx, observer, "payment-pix-a", "payment-pix-b")
+	if err = lock.Commit(ctx); err != nil {
+		t.Fatal("release payment order lock:", err)
 	}
 	wg.Wait()
-	close(ids)
-	close(errs)
-	for e := range errs {
-		if e != nil {
-			t.Fatal(e)
-		}
-	}
+	close(results)
 	first := ""
-	for id := range ids {
+	for result := range results {
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
 		if first == "" {
-			first = id
-		} else if id != first {
-			t.Fatalf("attempts differ: %s %s", first, id)
+			first = result.attemptID
+		} else if result.attemptID != first {
+			t.Fatalf("attempts differ: %s %s", first, result.attemptID)
 		}
 	}
+	t.Logf("payment reservation race used independent PostgreSQL backends pidA=%d pidB=%d", pidA, pidB)
 	var payments, attempts int
-	_ = f.pool.QueryRow(ctx, `SELECT count(*) FROM payments p JOIN orders o ON o.id=p.order_id WHERE o.order_number=$1`, ref).Scan(&payments)
-	_ = f.pool.QueryRow(ctx, `SELECT count(*) FROM payment_attempts a JOIN payments p ON p.id=a.payment_id JOIN orders o ON o.id=p.order_id WHERE o.order_number=$1`, ref).Scan(&attempts)
+	if err = f.pool.QueryRow(ctx, `SELECT count(*) FROM payments p JOIN orders o ON o.id=p.order_id WHERE o.order_number=$1`, ref).Scan(&payments); err != nil {
+		t.Fatal("count isolated payments:", err)
+	}
+	if err = f.pool.QueryRow(ctx, `SELECT count(*) FROM payment_attempts a JOIN payments p ON p.id=a.payment_id JOIN orders o ON o.id=p.order_id WHERE o.order_number=$1`, ref).Scan(&attempts); err != nil {
+		t.Fatal("count isolated payment attempts:", err)
+	}
 	if payments != 1 || attempts != 1 {
 		t.Fatalf("payments=%d attempts=%d", payments, attempts)
 	}
@@ -96,11 +145,12 @@ func TestPIXCompletionWebhookApprovalDedupOutOfOrderAndRefund(t *testing.T) {
 		t.Fatal(e)
 	}
 	now := time.Now().UTC()
-	pix, e := r.CompletePIX(ctx, req, domain.ProviderPayment{ID: "900001", Status: "pending", StatusDetail: "pending_waiting_transfer", Currency: "BRL", ExternalReference: ref, AmountCents: req.AmountCents, QRCode: "000201", QRCodeBase64: "abc", TicketURL: "https://example.test", UpdatedAt: &now})
+	externalPaymentID := "test-pix-" + ref
+	pix, e := r.CompletePIX(ctx, req, domain.ProviderPayment{ID: externalPaymentID, Status: "pending", StatusDetail: "pending_waiting_transfer", Currency: "BRL", ExternalReference: ref, AmountCents: req.AmountCents, QRCode: "000201", QRCodeBase64: "abc", TicketURL: "https://example.test", UpdatedAt: &now})
 	if e != nil || pix.QRCode == "" {
 		t.Fatalf("pix=%+v err=%v", pix, e)
 	}
-	w := domain.Webhook{EventID: "event-approved-" + ref, EventType: "payment.updated", ExternalPaymentID: "900001", Payload: []byte(`{"id":1,"type":"payment"}`)}
+	w := domain.Webhook{EventID: "event-approved-" + ref, EventType: "payment.updated", ExternalPaymentID: externalPaymentID, Payload: []byte(`{"id":1,"type":"payment"}`)}
 	fresh, e := r.RecordWebhook(ctx, w)
 	if e != nil || !fresh {
 		t.Fatalf("record=%v fresh=%v", e, fresh)
@@ -110,7 +160,7 @@ func TestPIXCompletionWebhookApprovalDedupOutOfOrderAndRefund(t *testing.T) {
 		t.Fatalf("duplicate=%v fresh=%v", e, fresh)
 	}
 	approved := now.Add(time.Minute)
-	e = r.Reconcile(ctx, w, domain.ProviderPayment{ID: "900001", Status: "approved", StatusDetail: "accredited", Currency: "BRL", ExternalReference: ref, AmountCents: req.AmountCents, ApprovedAt: &approved, UpdatedAt: &approved})
+	e = r.Reconcile(ctx, w, domain.ProviderPayment{ID: externalPaymentID, Status: "approved", StatusDetail: "accredited", Currency: "BRL", ExternalReference: ref, AmountCents: req.AmountCents, ApprovedAt: &approved, UpdatedAt: &approved})
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -120,31 +170,39 @@ func TestPIXCompletionWebhookApprovalDedupOutOfOrderAndRefund(t *testing.T) {
 	if e != nil || orderStatus != "confirmed" || paymentStatus != "paid" {
 		t.Fatalf("order=%s payment=%s err=%v", orderStatus, paymentStatus, e)
 	}
-	_ = f.pool.QueryRow(ctx, `SELECT count(*) FROM order_status_events e JOIN orders o ON o.id=e.order_id WHERE o.order_number=$1 AND e.status='confirmed'`, ref).Scan(&events)
+	if e = f.pool.QueryRow(ctx, `SELECT count(*) FROM order_status_events e JOIN orders o ON o.id=e.order_id WHERE o.order_number=$1 AND e.status='confirmed'`, ref).Scan(&events); e != nil {
+		t.Fatal("count confirmed order events:", e)
+	}
 	if events != 1 {
 		t.Fatalf("confirmed events=%d", events)
 	}
 	// Reconciliation retries must repair missing work and remain idempotent.
-	if e = r.Reconcile(ctx, w, domain.ProviderPayment{ID: "900001", Status: "approved", StatusDetail: "accredited", Currency: "BRL", ExternalReference: ref, AmountCents: req.AmountCents, ApprovedAt: &approved, UpdatedAt: &approved}); e != nil {
+	if e = r.Reconcile(ctx, w, domain.ProviderPayment{ID: externalPaymentID, Status: "approved", StatusDetail: "accredited", Currency: "BRL", ExternalReference: ref, AmountCents: req.AmountCents, ApprovedAt: &approved, UpdatedAt: &approved}); e != nil {
 		t.Fatal(e)
 	}
 	if e = f.pool.QueryRow(ctx, `SELECT count(*) FROM production_jobs pj JOIN order_items oi ON oi.id=pj.order_item_id JOIN orders o ON o.id=oi.order_id WHERE o.order_number=$1 AND pj.parent_job_id IS NULL`, ref).Scan(&productionJobs); e != nil || productionJobs != 1 {
 		t.Fatalf("production jobs=%d err=%v", productionJobs, e)
 	}
 	old := now
-	wOld := domain.Webhook{EventID: "event-old-" + ref, EventType: "payment.updated", ExternalPaymentID: "900001", Payload: []byte(`{"id":2,"type":"payment"}`)}
-	_, _ = r.RecordWebhook(ctx, wOld)
-	if e = r.Reconcile(ctx, wOld, domain.ProviderPayment{ID: "900001", Status: "pending", Currency: "BRL", ExternalReference: ref, AmountCents: req.AmountCents, UpdatedAt: &old}); e != nil {
+	wOld := domain.Webhook{EventID: "event-old-" + ref, EventType: "payment.updated", ExternalPaymentID: externalPaymentID, Payload: []byte(`{"id":2,"type":"payment"}`)}
+	if fresh, recordErr := r.RecordWebhook(ctx, wOld); recordErr != nil || !fresh {
+		t.Fatalf("record out-of-order webhook: fresh=%v err=%v", fresh, recordErr)
+	}
+	if e = r.Reconcile(ctx, wOld, domain.ProviderPayment{ID: externalPaymentID, Status: "pending", Currency: "BRL", ExternalReference: ref, AmountCents: req.AmountCents, UpdatedAt: &old}); e != nil {
 		t.Fatal(e)
 	}
-	_ = f.pool.QueryRow(ctx, `SELECT status FROM payments p JOIN orders o ON o.id=p.order_id WHERE o.order_number=$1`, ref).Scan(&paymentStatus)
+	if e = f.pool.QueryRow(ctx, `SELECT p.status FROM payments p JOIN orders o ON o.id=p.order_id WHERE o.order_number=$1`, ref).Scan(&paymentStatus); e != nil {
+		t.Fatal("read payment after out-of-order webhook:", e)
+	}
 	if paymentStatus != "paid" {
 		t.Fatalf("out of order regressed to %s", paymentStatus)
 	}
 	refundAt := approved.Add(time.Minute)
-	wRefund := domain.Webhook{EventID: "event-refund-" + ref, EventType: "payment.updated", ExternalPaymentID: "900001", Payload: []byte(`{"id":3,"type":"payment"}`)}
-	_, _ = r.RecordWebhook(ctx, wRefund)
-	if e = r.Reconcile(ctx, wRefund, domain.ProviderPayment{ID: "900001", Status: "refunded", StatusDetail: "refunded", Currency: "BRL", ExternalReference: ref, AmountCents: req.AmountCents, RefundedCents: req.AmountCents, ApprovedAt: &approved, UpdatedAt: &refundAt}); e != nil {
+	wRefund := domain.Webhook{EventID: "event-refund-" + ref, EventType: "payment.updated", ExternalPaymentID: externalPaymentID, Payload: []byte(`{"id":3,"type":"payment"}`)}
+	if fresh, recordErr := r.RecordWebhook(ctx, wRefund); recordErr != nil || !fresh {
+		t.Fatalf("record refund webhook: fresh=%v err=%v", fresh, recordErr)
+	}
+	if e = r.Reconcile(ctx, wRefund, domain.ProviderPayment{ID: externalPaymentID, Status: "refunded", StatusDetail: "refunded", Currency: "BRL", ExternalReference: ref, AmountCents: req.AmountCents, RefundedCents: req.AmountCents, ApprovedAt: &approved, UpdatedAt: &refundAt}); e != nil {
 		t.Fatal(e)
 	}
 	var refunded int64
@@ -192,18 +250,23 @@ func TestPaymentValueMismatchRollsBack(t *testing.T) {
 		t.Fatal(e)
 	}
 	now := time.Now()
-	_, e = r.CompletePIX(ctx, req, domain.ProviderPayment{ID: "900002", Status: "pending", Currency: "BRL", ExternalReference: ref, AmountCents: req.AmountCents, UpdatedAt: &now})
+	externalPaymentID := "test-pix-mismatch-" + ref
+	_, e = r.CompletePIX(ctx, req, domain.ProviderPayment{ID: externalPaymentID, Status: "pending", Currency: "BRL", ExternalReference: ref, AmountCents: req.AmountCents, UpdatedAt: &now})
 	if e != nil {
 		t.Fatal(e)
 	}
-	w := domain.Webhook{EventID: "event-wrong-" + ref, EventType: "payment.updated", ExternalPaymentID: "900002", Payload: []byte(`{"id":4}`)}
-	_, _ = r.RecordWebhook(ctx, w)
-	e = r.Reconcile(ctx, w, domain.ProviderPayment{ID: "900002", Status: "approved", Currency: "BRL", ExternalReference: ref, AmountCents: req.AmountCents + 1, UpdatedAt: &now})
+	w := domain.Webhook{EventID: "event-wrong-" + ref, EventType: "payment.updated", ExternalPaymentID: externalPaymentID, Payload: []byte(`{"id":4}`)}
+	if fresh, recordErr := r.RecordWebhook(ctx, w); recordErr != nil || !fresh {
+		t.Fatalf("record mismatch webhook: fresh=%v err=%v", fresh, recordErr)
+	}
+	e = r.Reconcile(ctx, w, domain.ProviderPayment{ID: externalPaymentID, Status: "approved", Currency: "BRL", ExternalReference: ref, AmountCents: req.AmountCents + 1, UpdatedAt: &now})
 	if !errors.Is(e, paymentapp.ErrValueMismatch) {
 		t.Fatalf("err=%v", e)
 	}
 	var status string
-	_ = f.pool.QueryRow(ctx, `SELECT status FROM orders WHERE order_number=$1`, ref).Scan(&status)
+	if e = f.pool.QueryRow(ctx, `SELECT status FROM orders WHERE order_number=$1`, ref).Scan(&status); e != nil {
+		t.Fatal("read order after value mismatch rollback:", e)
+	}
 	if status != "pending_payment" {
 		t.Fatalf("order changed: %s", status)
 	}

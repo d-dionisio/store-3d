@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -12,59 +11,19 @@ import (
 
 	app "example.com/loja-3d/backend/internal/application/production"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestProductionAnalyticsPostgreSQL(t *testing.T) {
-	dsn := strings.TrimSpace(testDatabaseURL())
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL is required")
-	}
-	config, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		t.Fatal("invalid TEST_DATABASE_URL")
-	}
-	database := strings.ToLower(config.ConnConfig.Database)
-	host := strings.ToLower(config.ConnConfig.Host)
-	if database != "loja_3d_test" || database == "loja_3d" {
-		t.Fatal("analytics integration requires exactly loja_3d_test")
-	}
-	if host != "localhost" && host != "127.0.0.1" && host != "::1" {
-		t.Fatal("analytics integration requires a loopback database host")
-	}
-	if config.ConnConfig.Port != 5432 {
-		t.Fatal("analytics integration requires database port 5432")
-	}
-	if dev := strings.TrimSpace(testDevelopmentDatabaseURL()); dev != "" && dev == dsn {
-		t.Fatal("TEST_DATABASE_URL must differ from DATABASE_URL")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	pool, err := pgxpool.NewWithConfig(ctx, config)
-	if err != nil {
-		t.Fatal("connect to isolated analytics database:", err)
-	}
+	_, pool, ctx := newProductionIntegrationSchema(t, "analytics")
 	defer pool.Close()
-	var connectedDatabase string
-	if err := pool.QueryRow(ctx, `SELECT current_database()`).Scan(&connectedDatabase); err != nil {
-		t.Fatal("verify connected database:", err)
-	}
-	if connectedDatabase != "loja_3d_test" {
-		t.Fatalf("refusing unexpected database %q", connectedDatabase)
-	}
-
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if _, err = tx.Exec(ctx, `SET LOCAL session_replication_role=replica`); err != nil {
-		t.Fatal("fixture transaction requires trigger replication-role permission:", err)
-	}
 
 	suffix := fmt.Sprintf("analytics-%d", time.Now().UnixNano())
-	var category, material, color, user, order, admin, printer, product, variant, item, job, spool, secondSpool string
+	var category, material, color, user, order, admin, printer, product, variant, item, spool, secondSpool string
 	id := func(query string, args []any, target *string) {
 		t.Helper()
 		if err := tx.QueryRow(ctx, query, args...).Scan(target); err != nil {
@@ -81,8 +40,7 @@ func TestProductionAnalyticsPostgreSQL(t *testing.T) {
 	id(`INSERT INTO products(category_id,slug,name,description,status)VALUES($1,$2,'Produto Analytics','Fixture','draft')RETURNING id`, []any{category, "product-" + suffix}, &product)
 	id(`INSERT INTO product_variants(product_id,material_id,color_id,sku,price_cents,stock_quantity)VALUES($1,$2,$3,$4,100,1)RETURNING id`, []any{product, material, color, "SKU-" + suffix}, &variant)
 	id(`INSERT INTO order_items(order_id,item_type,product_id,product_variant_id,product_name,description_snapshot,sku_snapshot,material_name,color_name,quantity,unit_price_cents)VALUES($1,'catalog',$2,$3,'Produto Analytics','Fixture',$4,'PLA Analytics','Violeta',1,100)RETURNING id`, []any{order, product, variant, "SKU-" + suffix}, &item)
-	id(`INSERT INTO production_jobs(order_item_id,material_id,color_id,status,quantity,job_number,started_at,completed_at)VALUES($1,$2,$3,'completed',1,$4,now()-interval '4 hours',now())RETURNING id`, []any{item, material, color, "PJ-" + suffix}, &job)
-	id(`INSERT INTO material_spools(spool_code,material_id,color_id,manufacturer,status,initial_weight_grams,current_weight_grams,cost_per_kg_cents)VALUES($1,$2,$3,'Fixture','available',1000,500,8000)RETURNING id`, []any{"SP-" + suffix, material, color}, &spool)
+	id(`INSERT INTO material_spools(spool_code,material_id,color_id,manufacturer,status,initial_weight_grams,current_weight_grams,cost_per_kg_cents)VALUES($1,$2,$3,'Fixture','available',1000,1000,8000)RETURNING id`, []any{"SP-" + suffix, material, color}, &spool)
 	id(`INSERT INTO material_spools(spool_code,material_id,color_id,manufacturer,status,initial_weight_grams,current_weight_grams,cost_per_kg_cents)VALUES($1,$2,$3,'Fixture','available',1000,900,20000)RETURNING id`, []any{"SP2-" + suffix, material, color}, &secondSpool)
 
 	base := time.Now().UTC().Truncate(time.Microsecond)
@@ -110,16 +68,35 @@ func TestProductionAnalyticsPostgreSQL(t *testing.T) {
 		{status: "completed", estimated: nil, actual: intValue(75)},                             // missing estimate is excluded
 		{status: "printing", estimated: intValue(60), actual: nil},                              // incomplete run is excluded
 	}
-	runIDs := make([]string, 0, len(runFixtures))
-	for index, fixture := range runFixtures {
+	jobIDs := make([]string, len(runFixtures))
+	for index := range runFixtures {
+		if index == 2 { // The failed run and its reprint must share one production job.
+			jobIDs[index] = jobIDs[1]
+			continue
+		}
+		itemID := item
+		if index != 0 {
+			id(`INSERT INTO order_items(order_id,item_type,product_id,product_variant_id,product_name,description_snapshot,sku_snapshot,material_name,color_name,quantity,unit_price_cents)VALUES($1,'catalog',$2,$3,'Produto Analytics','Fixture',$4,'PLA Analytics','Violeta',1,100)RETURNING id`, []any{order, product, variant, fmt.Sprintf("SKU-%s-%d", suffix, index)}, &itemID)
+		}
+		id(`INSERT INTO production_jobs(order_item_id,material_id,color_id,quantity,job_number)VALUES($1,$2,$3,1,$4)RETURNING id`, []any{itemID, material, color, fmt.Sprintf("PJ-%s-%d", suffix, index)}, &jobIDs[index])
+	}
+
+	runIDs := make([]string, len(runFixtures))
+	insertRun := func(index int) {
+		t.Helper()
+		fixture := runFixtures[index]
 		var runID string
 		var reprint any
 		if fixture.reprint {
-			reprint = runIDs[0]
+			reprint = runIDs[2]
 		}
 		completed := any(base.Add(-time.Duration(index) * time.Minute))
 		if fixture.status == "printing" {
 			completed = nil
+		}
+		insertStatus := fixture.status
+		if index == 0 || index == 2 {
+			insertStatus = "quality_check"
 		}
 		actualMinutes := 0
 		if fixture.actual != nil {
@@ -131,8 +108,28 @@ func TestProductionAnalyticsPostgreSQL(t *testing.T) {
 		}
 		id(`INSERT INTO production_runs(production_job_id,reprint_of_run_id,printer_id,attempt_number,quantity,status,estimated_minutes,actual_minutes,material_cost_cents,started_at,completed_at,failure_reason)
 			VALUES($1,$2,$3,$4,1,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
-			[]any{job, reprint, printer, index + 1, fixture.status, intArg(fixture.estimated), intArg(fixture.actual), fixture.legacyCost, started, completed, fixture.failure}, &runID)
-		runIDs = append(runIDs, runID)
+			[]any{jobIDs[index], reprint, printer, map[bool]int{true: 2, false: 1}[fixture.reprint], insertStatus, intArg(fixture.estimated), intArg(fixture.actual), fixture.legacyCost, started, completed, fixture.failure}, &runID)
+		runIDs[index] = runID
+	}
+	// Seed the failed first attempt and record its rejection before inserting the
+	// dependent reprint; all production integrity triggers stay enabled.
+	insertRun(2)
+	if _, err = tx.Exec(ctx, `INSERT INTO quality_inspections(production_run_id,result,dimensional_accuracy_ok,visual_quality_ok,functional_test_ok,notes,inspected_by_admin_user_id)VALUES($1,'rejected',false,true,false,'Fixture reprovada',$2)`, runIDs[2], admin); err != nil {
+		t.Fatal("insert rejected quality fixture:", err)
+	}
+	if _, err = tx.Exec(ctx, `SELECT transition_production_run($1,'failed',$2,'Analytics fixture failed',1)`, runIDs[2], admin); err != nil {
+		t.Fatal("transition rejected source run to failed:", err)
+	}
+	insertRun(0)
+	if _, err = tx.Exec(ctx, `INSERT INTO quality_inspections(production_run_id,result,dimensional_accuracy_ok,visual_quality_ok,functional_test_ok,notes,inspected_by_admin_user_id)VALUES($1,'approved',true,true,true,NULL,$2)`, runIDs[0], admin); err != nil {
+		t.Fatal("insert approved quality fixture:", err)
+	}
+	if _, err = tx.Exec(ctx, `SELECT transition_production_run($1,'completed',$2,'Analytics fixture completed',1)`, runIDs[0], admin); err != nil {
+		t.Fatal("transition approved run to completed:", err)
+	}
+	insertRun(1)
+	for index := 3; index < len(runFixtures); index++ {
+		insertRun(index)
 	}
 
 	consume := func(runID, spoolID string, grams, wasted int, unitCost, totalCost int64) {
@@ -142,16 +139,10 @@ func TestProductionAnalyticsPostgreSQL(t *testing.T) {
 			t.Fatalf("insert material snapshot: %v", err)
 		}
 	}
-	consume(runIDs[0], spool, 100, 5, 8000, 800)
-	consume(runIDs[0], secondSpool, 50, 2, 20000, 1000)
-	consume(runIDs[1], spool, 200, 5, 8000, 1600)
-	consume(runIDs[2], spool, 300, 5, 8000, 2400)
-	if _, err = tx.Exec(ctx, `INSERT INTO quality_inspections(production_run_id,result,dimensional_accuracy_ok,visual_quality_ok,functional_test_ok,notes,inspected_by_admin_user_id)VALUES($1,'approved',true,true,true,NULL,$2),($3,'rejected',false,true,false,'Fixture reprovada',$2)`, runIDs[0], admin, runIDs[2]); err != nil {
-		t.Fatal("insert quality snapshots:", err)
-	}
-	if _, err = tx.Exec(ctx, `INSERT INTO production_events(production_job_id,production_run_id,event_type,previous_status,new_status,admin_user_id,description)VALUES($1,$2,'status_transition','printing','completed',$3,'Analytics fixture event')`, job, runIDs[0], admin); err != nil {
-		t.Fatal("insert event fixture:", err)
-	}
+	consume(runIDs[0], spool, 100, 5, 8000, 840)
+	consume(runIDs[0], secondSpool, 50, 2, 20000, 1040)
+	consume(runIDs[1], spool, 200, 5, 8000, 1640)
+	consume(runIDs[2], spool, 300, 5, 8000, 2440)
 	// Change current spool prices after recording the immutable run snapshots.
 	if _, err = tx.Exec(ctx, `UPDATE material_spools SET cost_per_kg_cents=999999 WHERE id IN($1,$2)`, spool, secondSpool); err != nil {
 		t.Fatal("change current spool prices:", err)
@@ -187,10 +178,10 @@ func TestProductionAnalyticsPostgreSQL(t *testing.T) {
 		t.Fatalf("quality filter=%+v err=%v", rejected, err)
 	}
 	detail, err := repo.GetHistory(ctx, runIDs[0])
-	if err != nil || len(detail.Materials) != 2 || len(detail.Inspections) != 1 || len(detail.Events) != 1 {
+	if err != nil || len(detail.Materials) != 2 || len(detail.Inspections) != 1 || len(detail.Events) != 4 {
 		t.Fatalf("detail materials=%d inspections=%d events=%d err=%v", len(detail.Materials), len(detail.Inspections), len(detail.Events), err)
 	}
-	if detail.Run.ConsumedGrams != 150 || detail.Run.WastedGrams != 7 || detail.Run.MaterialCostCents != 1800 {
+	if detail.Run.ConsumedGrams != 150 || detail.Run.WastedGrams != 7 || detail.Run.MaterialCostCents != 1880 {
 		t.Fatalf("run snapshot was duplicated or recalculated: %+v", detail.Run)
 	}
 
@@ -199,7 +190,7 @@ func TestProductionAnalyticsPostgreSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	summary := analytics.Summary
-	if summary.TotalRuns != 7 || summary.CompletedRuns != 5 || summary.FailedRuns != 1 || summary.Reprints != 1 || summary.RecordedMinutes != 725 || summary.ConsumedGrams != 650 || summary.WastedGrams != 17 || summary.MaterialCostCents != 6500 {
+	if summary.TotalRuns != 7 || summary.CompletedRuns != 5 || summary.FailedRuns != 1 || summary.Reprints != 1 || summary.RecordedMinutes != 725 || summary.ConsumedGrams != 650 || summary.WastedGrams != 17 || summary.MaterialCostCents != 6660 {
 		t.Fatalf("summary=%+v", summary)
 	}
 	if summary.SuccessRate == nil || *summary.SuccessRate != 83.33 || summary.FailureRate == nil || *summary.FailureRate != 16.67 {
@@ -385,6 +376,3 @@ func logAnalyticsExplain(t *testing.T, ctx context.Context, tx pgx.Tx, productID
 		t.Logf("EXPLAIN %s root=%s buffers=%s planning=%s execution=%s seq_scans=%v indexes=%v", query.name, root, buffers, planning, execution, seqList, indexList)
 	}
 }
-
-func testDatabaseURL() string            { return strings.TrimSpace(os.Getenv("TEST_DATABASE_URL")) }
-func testDevelopmentDatabaseURL() string { return strings.TrimSpace(os.Getenv("DATABASE_URL")) }

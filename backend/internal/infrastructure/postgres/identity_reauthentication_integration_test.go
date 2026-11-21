@@ -3,115 +3,75 @@ package postgres
 import (
 	"context"
 	"errors"
-	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	app "example.com/loja-3d/backend/internal/application/identity"
 	security "example.com/loja-3d/backend/internal/security/auth"
+	testpostgres "example.com/loja-3d/backend/internal/testsupport/postgres"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// This test is deliberately narrow: it connects only to loja_3d_test, creates
-// a disposable schema, and drops that exact schema after exercising the real
-// repository against PostgreSQL. It is not an MFA/browser end-to-end test.
+// This test applies official migrations to a unique integration schema and
+// exercises the real repository through independent schema-scoped pools. It
+// is not an MFA/browser end-to-end test.
 func TestAdminReauthenticationPostgreSQL(t *testing.T) {
-	testURL := strings.TrimSpace(testDatabaseURL())
-	devURL := strings.TrimSpace(testDevelopmentDatabaseURL())
-	if testURL == "" || devURL == "" {
-		t.Skip("both TEST_DATABASE_URL and DATABASE_URL are required for guarded PostgreSQL reauthentication tests")
-	}
-	testCfg, err := pgxpool.ParseConfig(testURL)
-	if err != nil {
-		t.Fatal("invalid TEST_DATABASE_URL; credentials hidden")
-	}
-	devCfg, err := pgxpool.ParseConfig(devURL)
-	if err != nil || testURL == devURL || testCfg.ConnConfig.Database != "loja_3d_test" || devCfg.ConnConfig.Database != "loja_3d" {
-		t.Fatal("refusing test run: URLs must be distinct and target loja_3d_test and loja_3d respectively")
-	}
-	host := strings.ToLower(testCfg.ConnConfig.Host)
-	if (host != "localhost" && host != "127.0.0.1" && host != "::1") || testCfg.ConnConfig.Port != 5432 {
-		t.Fatal("refusing test run: TEST_DATABASE_URL must target loopback:5432")
+	if dsn, ok := os.LookupEnv(testpostgres.EnvDatabaseURL); !ok || strings.TrimSpace(dsn) == "" {
+		t.Skip("PostgreSQL integration test requires the dedicated TEST_DATABASE_URL")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
-	observerCfg := testCfg.Copy()
-	observerCfg.MaxConns, observerCfg.MinConns = 6, 0
-	observerCfg.ConnConfig.RuntimeParams["application_name"] = "reauth-test-observer"
-	observer, err := pgxpool.NewWithConfig(ctx, observerCfg)
+	schema, err := testpostgres.CreateSchema(ctx, t, "reauth")
 	if err != nil {
-		t.Fatal("connect to isolated test database")
+		t.Fatalf("create isolated PostgreSQL schema: %v", err)
+	}
+	if err = schema.ApplyOfficialMigrations(ctx); err != nil {
+		t.Fatalf("apply official migrations to isolated schema: %v", err)
+	}
+	observer, err := schema.OpenPool(ctx)
+	if err != nil {
+		t.Fatalf("open isolated PostgreSQL pool: %v", err)
 	}
 	t.Cleanup(observer.Close)
-	var dbName, serverVersion string
-	if err = observer.QueryRow(ctx, `SELECT current_database(),current_setting('server_version')`).Scan(&dbName, &serverVersion); err != nil {
-		t.Fatal("verify isolated PostgreSQL connection")
-	}
-	if dbName != "loja_3d_test" || !strings.HasPrefix(serverVersion, "17.6") {
-		t.Fatalf("refusing test run: database=%q server=%q", dbName, serverVersion)
-	}
-	var version int
-	var dirty bool
-	if err = observer.QueryRow(ctx, `SELECT version,dirty FROM public.schema_migrations`).Scan(&version, &dirty); err != nil || version != 28 || dirty {
-		t.Fatalf("expected migration 28 dirty=false; version=%d dirty=%v err=%v", version, dirty, err)
-	}
-
-	schema := fmt.Sprintf("reauth_test_%d", time.Now().UnixNano())
-	if _, err = observer.Exec(ctx, `CREATE SCHEMA `+schema); err != nil {
-		t.Fatal("create disposable schema:", err)
-	}
-	t.Cleanup(func() {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cleanupCancel()
-		if _, cleanupErr := observer.Exec(cleanupCtx, `DROP SCHEMA `+schema+` CASCADE`); cleanupErr != nil {
-			t.Errorf("drop exact disposable schema: %v", cleanupErr)
-			return
-		}
-		var remains bool
-		if cleanupErr := observer.QueryRow(cleanupCtx, `SELECT to_regnamespace($1) IS NOT NULL`, schema).Scan(&remains); cleanupErr != nil || remains {
-			t.Errorf("disposable schema remains=%v err=%v", remains, cleanupErr)
-		}
-	})
-	for _, table := range []string{"admin_users", "admin_sessions", "auth_reauthentication_evidence", "auth_mfa_factors"} {
-		if _, err = observer.Exec(ctx, `CREATE TABLE `+schema+`.`+table+` (LIKE public.`+table+` INCLUDING ALL)`); err != nil {
-			t.Fatalf("clone isolated %s table: %v", table, err)
-		}
-	}
 
 	newPool := func(name string) *pgxpool.Pool {
-		cfg := testCfg.Copy()
-		cfg.ConnConfig.RuntimeParams["search_path"] = schema + ",public"
-		cfg.ConnConfig.RuntimeParams["application_name"] = name
-		cfg.MaxConns, cfg.MinConns = 2, 0
-		pool, poolErr := pgxpool.NewWithConfig(ctx, cfg)
+		pool, poolErr := schema.OpenPoolWithApplicationName(ctx, name)
 		if poolErr != nil {
-			t.Fatalf("open independent test pool %s", name)
+			t.Fatalf("open independent schema-scoped pool %s", name)
 		}
-		t.Cleanup(pool.Close)
 		return pool
 	}
 	poolA, poolB := newPool("reauth-consumer-a"), newPool("reauth-consumer-b")
 	repo := NewIdentityRepository(poolA)
+	fixtureID, err := testpostgres.NewFixtureID()
+	if err != nil {
+		t.Fatal("create unique fixture identifier")
+	}
 	ids := map[string]string{}
 	for _, name := range []string{"owner", "other"} {
 		var id string
-		if err = observer.QueryRow(ctx, `INSERT INTO `+schema+`.admin_users(email,full_name,password_hash,role,status) VALUES($1,$2,$3,'admin','active') RETURNING id::text`, name+"-"+fmt.Sprint(time.Now().UnixNano())+"@example.invalid", "Reauth fixture", strings.Repeat("x", 60)).Scan(&id); err != nil {
+		if err = observer.QueryRow(ctx, `INSERT INTO admin_users(email,full_name,password_hash,role,status) VALUES($1,$2,$3,'admin','active') RETURNING id::text`, name+"-"+fixtureID+"@example.invalid", "Reauth fixture", strings.Repeat("x", 60)).Scan(&id); err != nil {
 			t.Fatal("insert isolated admin fixture:", err)
 		}
 		ids[name] = id
 	}
-	if _, err = observer.Exec(ctx, `INSERT INTO `+schema+`.auth_mfa_factors(admin_user_id,secret_ciphertext,key_version,enabled_at,last_accepted_counter) VALUES($1,$2,1,now(),0)`, ids["owner"], []byte(strings.Repeat("x", 40))); err != nil {
+	if _, err = observer.Exec(ctx, `INSERT INTO auth_mfa_factors(admin_user_id,secret_ciphertext,key_version,enabled_at,last_accepted_counter) VALUES($1,$2,1,now(),0)`, ids["owner"], []byte(strings.Repeat("x", 40))); err != nil {
 		t.Fatal("insert isolated MFA factor fixture:", err)
 	}
 	session := func(owner string, expires time.Time, revoked bool) string {
 		t.Helper()
+		sessionFixtureID, fixtureErr := testpostgres.NewFixtureID()
+		if fixtureErr != nil {
+			t.Fatal("create unique session fixture identifier")
+		}
 		var id string
 		var revokedAt any
 		if revoked {
 			revokedAt = time.Now().UTC()
 		}
-		if e := observer.QueryRow(ctx, `INSERT INTO `+schema+`.admin_sessions(admin_user_id,token_hash,csrf_token_hash,expires_at,revoked_at,authentication_level) VALUES($1,$2,$3,$4,$5,'mfa') RETURNING id::text`, ids[owner], security.TokenHash(fmt.Sprintf("session-%s-%d", owner, time.Now().UnixNano())), security.TokenHash(fmt.Sprintf("csrf-%s-%d", owner, time.Now().UnixNano())), expires, revokedAt).Scan(&id); e != nil {
+		if e := observer.QueryRow(ctx, `INSERT INTO admin_sessions(admin_user_id,token_hash,csrf_token_hash,expires_at,revoked_at,authentication_level) VALUES($1,$2,$3,$4,$5,'mfa') RETURNING id::text`, ids[owner], security.TokenHash("session-"+owner+"-"+sessionFixtureID), security.TokenHash("csrf-"+owner+"-"+sessionFixtureID), expires, revokedAt).Scan(&id); e != nil {
 			t.Fatal("insert isolated session fixture:", e)
 		}
 		return id
@@ -120,10 +80,17 @@ func TestAdminReauthenticationPostgreSQL(t *testing.T) {
 	liveA2 := session("owner", time.Now().Add(time.Hour), false)
 	liveOther := session("other", time.Now().Add(time.Hour), false)
 	expired := session("owner", time.Now().Add(time.Hour), false)
-	if _, err = observer.Exec(ctx, `UPDATE `+schema+`.admin_sessions SET created_at=now()-interval '2 minutes',expires_at=now()-interval '1 minute' WHERE id=$1`, expired); err != nil {
+	if _, err = observer.Exec(ctx, `UPDATE admin_sessions SET created_at=now()-interval '2 minutes',expires_at=now()-interval '1 minute' WHERE id=$1`, expired); err != nil {
 		t.Fatal("expire isolated session fixture:", err)
 	}
-	newHash := func(label string) string { return security.TokenHash(label + fmt.Sprint(time.Now().UnixNano())) }
+	newHash := func(label string) string {
+		t.Helper()
+		id, idErr := testpostgres.NewFixtureID()
+		if idErr != nil {
+			t.Fatal("create unique evidence fixture identifier")
+		}
+		return security.TokenHash(label + id)
+	}
 	var acceptedCounter int64 = 10
 	issue := func(id, sessionID string, ttl time.Duration) string {
 		t.Helper()
@@ -170,14 +137,14 @@ func TestAdminReauthenticationPostgreSQL(t *testing.T) {
 		t.Fatalf("issuance for a revoked session should be rejected, got %v", err)
 	}
 	revokedHash := issue(ids["owner"], liveA, time.Minute)
-	if _, err = observer.Exec(ctx, `UPDATE `+schema+`.admin_sessions SET revoked_at=now() WHERE id=$1`, liveA); err != nil {
+	if _, err = observer.Exec(ctx, `UPDATE admin_sessions SET revoked_at=now() WHERE id=$1`, liveA); err != nil {
 		t.Fatal("revoke isolated session:", err)
 	}
 	if err = repo.ConsumeReauthEvidence(ctx, "admin", liveA, revokedHash); !errors.Is(err, app.ErrUnauthorized) {
 		t.Fatalf("revoked session should be rejected, got %v", err)
 	}
 	expiredHash = issue(ids["owner"], liveA2, time.Minute)
-	if _, err = observer.Exec(ctx, `UPDATE `+schema+`.admin_sessions SET created_at=now()-interval '2 minutes',expires_at=now()-interval '1 minute' WHERE id=$1`, liveA2); err != nil {
+	if _, err = observer.Exec(ctx, `UPDATE admin_sessions SET created_at=now()-interval '2 minutes',expires_at=now()-interval '1 minute' WHERE id=$1`, liveA2); err != nil {
 		t.Fatal("expire isolated session:", err)
 	}
 	if err = repo.ConsumeReauthEvidence(ctx, "admin", liveA2, expiredHash); !errors.Is(err, app.ErrUnauthorized) {
@@ -193,7 +160,7 @@ func TestAdminReauthenticationPostgreSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = lock.Exec(ctx, `SELECT id FROM `+schema+`.admin_sessions WHERE id=$1 FOR UPDATE`, concurrentSession); err != nil {
+	if _, err = lock.Exec(ctx, `SELECT id FROM admin_sessions WHERE id=$1 FOR UPDATE`, concurrentSession); err != nil {
 		_ = lock.Rollback(ctx)
 		t.Fatal("lock fixture session for synchronized race:", err)
 	}
@@ -241,7 +208,7 @@ func TestAdminReauthenticationPostgreSQL(t *testing.T) {
 		t.Fatalf("concurrent evidence consumption accepted=%d rejected=%d", passed, rejected)
 	}
 	var consumedCount int
-	if err = observer.QueryRow(ctx, `SELECT count(*) FROM `+schema+`.auth_reauthentication_evidence WHERE token_hash=$1 AND consumed_at IS NOT NULL`, concurrentHash).Scan(&consumedCount); err != nil || consumedCount != 1 {
+	if err = observer.QueryRow(ctx, `SELECT count(*) FROM auth_reauthentication_evidence WHERE token_hash=$1 AND consumed_at IS NOT NULL`, concurrentHash).Scan(&consumedCount); err != nil || consumedCount != 1 {
 		t.Fatalf("concurrent consumption persisted consumed rows=%d err=%v", consumedCount, err)
 	}
 	t.Log("concurrent independent PostgreSQL connections: exactly one consume committed")
@@ -249,22 +216,22 @@ func TestAdminReauthenticationPostgreSQL(t *testing.T) {
 	// Force a database write error and prove the transaction left evidence
 	// untouched. This is a scoped trigger in the disposable schema only.
 	failureHash := issue(ids["owner"], concurrentSession, time.Minute)
-	if _, err = observer.Exec(ctx, `CREATE FUNCTION `+schema+`.reject_reauth_consume() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'isolated reauth persistence fault' USING ERRCODE='23514'; END $$`); err != nil {
+	if _, err = observer.Exec(ctx, `CREATE FUNCTION reject_reauth_consume() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'isolated reauth persistence fault' USING ERRCODE='23514'; END $$`); err != nil {
 		t.Fatal("create scoped failure trigger function:", err)
 	}
-	if _, err = observer.Exec(ctx, `CREATE TRIGGER reject_reauth_consume BEFORE UPDATE ON `+schema+`.auth_reauthentication_evidence FOR EACH ROW EXECUTE FUNCTION `+schema+`.reject_reauth_consume()`); err != nil {
+	if _, err = observer.Exec(ctx, `CREATE TRIGGER reject_reauth_consume BEFORE UPDATE ON auth_reauthentication_evidence FOR EACH ROW EXECUTE FUNCTION reject_reauth_consume()`); err != nil {
 		t.Fatal("create scoped failure trigger:", err)
 	}
 	if err = repo.ConsumeReauthEvidence(ctx, "admin", concurrentSession, failureHash); err == nil || errors.Is(err, app.ErrUnauthorized) {
 		t.Fatalf("repository should propagate a persistence failure distinctly, got %v", err)
 	}
-	if _, err = observer.Exec(ctx, `DROP TRIGGER reject_reauth_consume ON `+schema+`.auth_reauthentication_evidence`); err != nil {
+	if _, err = observer.Exec(ctx, `DROP TRIGGER reject_reauth_consume ON auth_reauthentication_evidence`); err != nil {
 		t.Fatal("remove scoped failure trigger:", err)
 	}
-	if _, err = observer.Exec(ctx, `DROP FUNCTION `+schema+`.reject_reauth_consume()`); err != nil {
+	if _, err = observer.Exec(ctx, `DROP FUNCTION reject_reauth_consume()`); err != nil {
 		t.Fatal("remove scoped failure function:", err)
 	}
-	if err = observer.QueryRow(ctx, `SELECT count(*) FROM `+schema+`.auth_reauthentication_evidence WHERE token_hash=$1 AND consumed_at IS NULL`, failureHash).Scan(&consumedCount); err != nil || consumedCount != 1 {
+	if err = observer.QueryRow(ctx, `SELECT count(*) FROM auth_reauthentication_evidence WHERE token_hash=$1 AND consumed_at IS NULL`, failureHash).Scan(&consumedCount); err != nil || consumedCount != 1 {
 		t.Fatalf("failed persistence changed evidence state; unconsumed rows=%d err=%v", consumedCount, err)
 	}
 	t.Log("induced PostgreSQL write failure propagated; evidence consumption rolled back")

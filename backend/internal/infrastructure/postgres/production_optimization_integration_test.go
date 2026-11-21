@@ -1,44 +1,20 @@
 package postgres
 
 import (
-	"context"
-	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestProductionOptimizationReadOnlyIntegration(t *testing.T) {
-	dsn := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL is required")
-	}
-	config, err := pgxpool.ParseConfig(dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	database := strings.ToLower(config.ConnConfig.Database)
-	if !strings.HasSuffix(database, "_test") || database == "loja_3d" {
-		t.Fatalf("unsafe database %q", database)
-	}
-	if dev := strings.TrimSpace(os.Getenv("DATABASE_URL")); dev != "" && dev == dsn {
-		t.Fatal("TEST_DATABASE_URL must differ from DATABASE_URL")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	pool, err := pgxpool.NewWithConfig(ctx, config)
-	if err != nil {
-		t.Fatal(err)
-	}
+	pool, ctx := newProductionIntegrationPool(t, "optimization")
 	defer pool.Close()
 	repository := NewProductionRepository(pool)
 	before := map[string]int64{}
 	for _, table := range []string{"production_jobs", "production_runs", "material_spools"} {
 		var count int64
-		if err = pool.QueryRow(ctx, "SELECT count(*) FROM "+table).Scan(&count); err != nil {
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM "+table).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
 		before[table] = count
@@ -66,7 +42,7 @@ func TestProductionOptimizationReadOnlyIntegration(t *testing.T) {
 	}
 	for table, count := range before {
 		var after int64
-		if err = pool.QueryRow(ctx, "SELECT count(*) FROM "+table).Scan(&after); err != nil || after != count {
+		if err := pool.QueryRow(ctx, "SELECT count(*) FROM "+table).Scan(&after); err != nil || after != count {
 			t.Fatalf("read-only invariant %s before=%d after=%d err=%v", table, count, after, err)
 		}
 	}

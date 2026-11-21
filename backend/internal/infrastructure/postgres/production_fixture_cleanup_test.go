@@ -2,75 +2,68 @@ package postgres
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"strings"
 	"testing"
+	"time"
 
+	testpostgres "example.com/loja-3d/backend/internal/testsupport/postgres"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// productionFixtureRoots contains only exact IDs created by one integration
-// test. Cleanup intentionally never accepts prefixes or broad predicates.
-type productionFixtureRoots struct {
-	OrderID, UserID, AdminID         string
-	PrinterID, SpoolID               string
-	VariantID, ProductID, CategoryID string
-	MaterialID, ColorID              string
+// newProductionIntegrationSchema creates a fresh schema for each production
+// integration test. TestSupport owns cleanup and drops only that schema after
+// its connections close; triggers and foreign keys remain enabled throughout.
+func newProductionIntegrationSchema(t *testing.T, label string) (*testpostgres.IsolatedSchema, *pgxpool.Pool, context.Context) {
+	t.Helper()
+	if dsn, ok := os.LookupEnv(testpostgres.EnvDatabaseURL); !ok || strings.TrimSpace(dsn) == "" {
+		t.Skip("Production PostgreSQL integration requires the dedicated TEST_DATABASE_URL")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	t.Cleanup(cancel)
+	schema, err := testpostgres.CreateSchema(ctx, t, label)
+	if err != nil {
+		t.Fatalf("create isolated production schema: %v", err)
+	}
+	if err = schema.ApplyOfficialMigrations(ctx); err != nil {
+		t.Fatalf("apply official migrations to isolated production schema: %v", err)
+	}
+	pool, err := schema.OpenPool(ctx)
+	if err != nil {
+		t.Fatalf("open isolated production pool: %v", err)
+	}
+	return schema, pool, ctx
 }
 
-func registerProductionFixtureCleanup(t *testing.T, pool *pgxpool.Pool, roots *productionFixtureRoots) {
+func newProductionIntegrationPool(t *testing.T, label string) (*pgxpool.Pool, context.Context) {
 	t.Helper()
-	t.Cleanup(func() {
-		ctx := context.Background()
-		conn, err := pool.Acquire(ctx)
-		if err != nil {
-			t.Errorf("acquire fixture cleanup connection: %v", err)
-			return
-		}
-		defer conn.Release()
-		if _, err = conn.Exec(ctx, `SET session_replication_role=replica`); err != nil {
-			t.Errorf("disable fixture cleanup triggers: %v", err)
-			return
-		}
-		defer conn.Exec(ctx, `RESET session_replication_role`)
+	_, pool, ctx := newProductionIntegrationSchema(t, label)
+	return pool, ctx
+}
 
-		queries := []struct {
-			sql string
-			arg string
-		}{
-			{`DELETE FROM quality_inspections WHERE production_run_id IN (SELECT pr.id FROM production_runs pr JOIN production_jobs pj ON pj.id=pr.production_job_id JOIN order_items oi ON oi.id=pj.order_item_id WHERE oi.order_id=$1)`, roots.OrderID},
-			{`DELETE FROM production_run_materials WHERE production_run_id IN (SELECT pr.id FROM production_runs pr JOIN production_jobs pj ON pj.id=pr.production_job_id JOIN order_items oi ON oi.id=pj.order_item_id WHERE oi.order_id=$1)`, roots.OrderID},
-			{`DELETE FROM production_events WHERE production_job_id IN (SELECT pj.id FROM production_jobs pj JOIN order_items oi ON oi.id=pj.order_item_id WHERE oi.order_id=$1)`, roots.OrderID},
-			{`DELETE FROM production_runs WHERE production_job_id IN (SELECT pj.id FROM production_jobs pj JOIN order_items oi ON oi.id=pj.order_item_id WHERE oi.order_id=$1)`, roots.OrderID},
-			{`DELETE FROM production_job_legacy_links WHERE job_id IN (SELECT pj.id FROM production_jobs pj JOIN order_items oi ON oi.id=pj.order_item_id WHERE oi.order_id=$1) OR assigned_parent_job_id IN (SELECT pj.id FROM production_jobs pj JOIN order_items oi ON oi.id=pj.order_item_id WHERE oi.order_id=$1)`, roots.OrderID},
-			{`DELETE FROM production_jobs WHERE order_item_id IN (SELECT id FROM order_items WHERE order_id=$1)`, roots.OrderID},
-			{`DELETE FROM material_spool_adjustments WHERE material_spool_id=$1`, roots.SpoolID},
-			{`DELETE FROM printer_maintenance_events WHERE printer_id=$1`, roots.PrinterID},
-			{`DELETE FROM payment_status_events WHERE payment_id IN (SELECT id FROM payments WHERE order_id=$1)`, roots.OrderID},
-			{`DELETE FROM payment_refunds WHERE payment_id IN (SELECT id FROM payments WHERE order_id=$1)`, roots.OrderID},
-			{`DELETE FROM payment_attempts WHERE payment_id IN (SELECT id FROM payments WHERE order_id=$1)`, roots.OrderID},
-			{`DELETE FROM payments WHERE order_id=$1`, roots.OrderID},
-			{`DELETE FROM order_status_events WHERE order_id=$1`, roots.OrderID},
-			{`DELETE FROM order_items WHERE order_id=$1`, roots.OrderID},
-			{`DELETE FROM orders WHERE id=$1`, roots.OrderID},
-			{`DELETE FROM admin_audit_events WHERE admin_user_id=$1`, roots.AdminID},
-			{`DELETE FROM admin_sessions WHERE admin_user_id=$1`, roots.AdminID},
-			{`DELETE FROM material_spools WHERE id=$1`, roots.SpoolID},
-			{`DELETE FROM printers WHERE id=$1`, roots.PrinterID},
-			{`DELETE FROM admin_users WHERE id=$1`, roots.AdminID},
-			{`DELETE FROM users WHERE id=$1`, roots.UserID},
-			{`DELETE FROM product_variants WHERE id=$1`, roots.VariantID},
-			{`DELETE FROM products WHERE id=$1`, roots.ProductID},
-			{`DELETE FROM categories WHERE id=$1`, roots.CategoryID},
-			{`DELETE FROM materials WHERE id=$1`, roots.MaterialID},
-			{`DELETE FROM colors WHERE id=$1`, roots.ColorID},
+func transitionProductionJobFixture(ctx context.Context, tx pgx.Tx, jobID, target, adminID string) error {
+	paths := map[string][]string{
+		"queued":        {"queued"},
+		"preparing":     {"queued", "preparing"},
+		"printing":      {"queued", "preparing", "printing"},
+		"quality_check": {"queued", "preparing", "printing", "quality_check"},
+		"completed":     {"queued", "preparing", "printing", "quality_check", "completed"},
+		"failed":        {"queued", "failed"},
+		"cancelled":     {"cancelled"},
+	}
+	for _, next := range paths[target] {
+		var version int64
+		if err := tx.QueryRow(ctx, `SELECT version FROM production_jobs WHERE id=$1`, jobID).Scan(&version); err != nil {
+			return err
 		}
-		for _, query := range queries {
-			if query.arg == "" {
-				continue
-			}
-			if _, err = conn.Exec(ctx, query.sql, query.arg); err != nil {
-				t.Errorf("clean exact production fixture: %v", err)
-				return
-			}
+		if _, err := tx.Exec(ctx, `SELECT transition_production_job($1,$2,$3,'isolated integration fixture transition',$4)`, jobID, next, adminID, version); err != nil {
+			return err
 		}
-	})
+	}
+	if target != "awaiting_production" && len(paths[target]) == 0 {
+		return fmt.Errorf("unsupported production job fixture target %q", target)
+	}
+	return nil
 }

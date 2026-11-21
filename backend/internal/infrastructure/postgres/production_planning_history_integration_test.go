@@ -3,45 +3,23 @@ package postgres
 import (
 	"context"
 	"fmt"
-	"os"
-	"strings"
 	"testing"
 	"time"
 
 	app "example.com/loja-3d/backend/internal/application/production"
 	admindomain "example.com/loja-3d/backend/internal/domain/admin"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func TestProductionHistoricalFallbackHierarchy(t *testing.T) {
-	dsn := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL is required")
-	}
-	config, err := pgxpool.ParseConfig(dsn)
-	if err != nil || !strings.HasSuffix(strings.ToLower(config.ConnConfig.Database), "_test") || strings.EqualFold(config.ConnConfig.Database, "loja_3d") {
-		t.Fatal("history test requires a dedicated *_test database")
-	}
-	if dev := strings.TrimSpace(os.Getenv("DATABASE_URL")); dev != "" && dev == dsn {
-		t.Fatal("TEST_DATABASE_URL must differ from DATABASE_URL")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	pool, err := pgxpool.NewWithConfig(ctx, config)
-	if err != nil {
-		t.Fatal(err)
-	}
+	pool, ctx := newProductionIntegrationPool(t, "planning_history")
 	defer pool.Close()
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback(context.Background())
-	if _, err = tx.Exec(ctx, `SET LOCAL session_replication_role=replica`); err != nil {
-		t.Fatal(err)
-	}
 	suffix := fmt.Sprintf("history-%d", time.Now().UnixNano())
-	var category, material, color, color2, user, order, printerA, printerX string
+	var category, material, color, color2, user, order, admin, printerA, printerX string
 	mustID := func(query string, args []any, target *string) {
 		t.Helper()
 		if scanErr := tx.QueryRow(ctx, query, args...).Scan(target); scanErr != nil {
@@ -54,6 +32,10 @@ func TestProductionHistoricalFallbackHierarchy(t *testing.T) {
 	mustID(`INSERT INTO colors(slug,name,hex_code) VALUES($1,$2,'#445566') RETURNING id`, []any{suffix + "-2", "History color 2 " + suffix}, &color2)
 	mustID(`INSERT INTO users(email,full_name,email_verified_at) VALUES($1,'History fixture',now()) RETURNING id`, []any{suffix + "@example.test"}, &user)
 	mustID(`INSERT INTO orders(order_number,user_id,status,customer_name,customer_email,subtotal_cents,total_cents,payment_readiness) VALUES($1,$2,'confirmed','History fixture',$3,100000,100000,'ready') RETURNING id`, []any{"PED-" + suffix, user, suffix + "@example.test"}, &order)
+	mustID(`INSERT INTO admin_users(email,full_name,password_hash,role) VALUES($1,'History manager',repeat('x',60),'production_manager') RETURNING id`, []any{suffix + "-admin@example.test"}, &admin)
+	if _, err = tx.Exec(ctx, `INSERT INTO payments(order_id,method,status,amount_cents,paid_amount_cents,currency,paid_at) VALUES($1,'pix','paid',100000,100000,'BRL',now())`, order); err != nil {
+		t.Fatal("insert paid planning fixture:", err)
+	}
 	mustID(`INSERT INTO printers(code,name,manufacturer,model,status,build_width_mm,build_depth_mm,build_height_mm) VALUES($1,'History A1','Bambu Lab','A1','available',256,256,256) RETURNING id`, []any{suffix + "-a1"}, &printerA)
 	mustID(`INSERT INTO printers(code,name,manufacturer,model,status,build_width_mm,build_depth_mm,build_height_mm) VALUES($1,'History X1','Bambu Lab','X1','available',256,256,256) RETURNING id`, []any{suffix + "-x1"}, &printerX)
 	type productSet struct{ product, primary, secondary string }
@@ -72,15 +54,7 @@ func TestProductionHistoricalFallbackHierarchy(t *testing.T) {
 		sequence++
 		var item, job, run string
 		mustID(`INSERT INTO order_items(order_id,item_type,product_id,product_variant_id,product_name,description_snapshot,sku_snapshot,material_name,color_name,quantity,unit_price_cents) VALUES($1,'catalog',$2,$3,$4,'History',$5,'History material','History color',1,100) RETURNING id`, []any{order, set.product, variant, label, fmt.Sprintf("SKU-H-%s-%d", suffix, sequence)}, &item)
-		jobStarted := any(nil)
-		jobCompleted := any(nil)
-		if status == "completed" {
-			jobStarted = completedAt.Add(-time.Duration(actual) * time.Minute)
-			jobCompleted = completedAt
-		} else if status == "printing" {
-			jobStarted = now.Add(-time.Minute)
-		}
-		mustID(`INSERT INTO production_jobs(order_item_id,material_id,color_id,status,quantity,job_number,started_at,completed_at) VALUES($1,$2,$3,$4,1,$5,$6,$7) RETURNING id`, []any{item, material, color, status, fmt.Sprintf("H-%s-%03d", suffix, sequence), jobStarted, jobCompleted}, &job)
+		mustID(`INSERT INTO production_jobs(order_item_id,material_id,color_id,quantity,job_number) VALUES($1,$2,$3,1,$4) RETURNING id`, []any{item, material, color, fmt.Sprintf("H-%s-%03d", suffix, sequence)}, &job)
 		started := any(nil)
 		completed := any(nil)
 		actualValue := any(nil)
@@ -92,6 +66,11 @@ func TestProductionHistoricalFallbackHierarchy(t *testing.T) {
 			started = now.Add(-time.Minute)
 		}
 		mustID(`INSERT INTO production_runs(production_job_id,printer_id,attempt_number,quantity,status,actual_minutes,started_at,completed_at) VALUES($1,$2,1,1,$3,$4,$5,$6) RETURNING id`, []any{job, printer, status, actualValue, started, completed}, &run)
+		if status == "queued" {
+			if _, transitionErr := tx.Exec(ctx, `SELECT transition_production_job($1,'queued',$2,'Planning fixture queued',1)`, job, admin); transitionErr != nil {
+				t.Fatalf("queue paid target job through production transition: %v", transitionErr)
+			}
+		}
 		return job
 	}
 	addCurrent := func(key string, set productSet, printer string) string {
@@ -153,7 +132,7 @@ func TestProductionHistoricalFallbackHierarchy(t *testing.T) {
 		t.Fatal(err)
 	}
 	var residual int
-	if err = pool.QueryRow(ctx, `SELECT count(*) FROM production_jobs WHERE job_number LIKE 'H-history-%'`).Scan(&residual); err != nil || residual != 0 {
+	if err = pool.QueryRow(ctx, `SELECT count(*) FROM production_jobs WHERE job_number LIKE $1`, "H-"+suffix+"-%").Scan(&residual); err != nil || residual != 0 {
 		t.Fatalf("history fixture cleanup=%d err=%v", residual, err)
 	}
 }

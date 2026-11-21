@@ -107,6 +107,21 @@ go run ./cmd/migrate down 2
 
 O comando procura os arquivos em `backend/migrations`. Para execução a partir de outro diretório, configure `MIGRATIONS_PATH` com uma URL `file://` adequada. Migrations nunca são aplicadas automaticamente durante o startup da API.
 
+#### Banco descartável de integração PostgreSQL
+
+O banco de integração é diferente do banco de homologação `loja_3d_test`, que contém seeds e não é descartável. O provisionamento do role dedicado `formo3d_integration_test` e database `loja_3d_integration_test` deve ser feito manualmente no cluster confirmado pelo operador, sem credenciais comerciais. A URL não comprova isolamento de container/volume; isso permanece uma decisão operacional. Não há criação automática de database.
+
+Disponibilize somente `TEST_DATABASE_URL` no processo PowerShell, por um segredo local aprovado, apontando para `127.0.0.1:5433/loja_3d_integration_test`. Não use `DATABASE_URL` como fallback. A partir de `backend`, valide primeiro a identidade e o estado; apenas se `status` informar `migration_version=none`, aplique as migrations oficiais:
+
+```powershell
+go run ./cmd/integration-db status
+# Confira database, user, PostgreSQL 17.x e migration_version=none.
+go run ./cmd/integration-db migrate
+go run ./cmd/integration-db status
+```
+
+O comando `migrate` falha fechado se a base não estiver vazia, usa apenas `TEST_DATABASE_URL`, não cria databases nem executa `down`. Os testes comuns não executam migrations; o helper `internal/testsupport/postgres` valida host, porta, database, usuário e identidade efetiva antes dos fixtures. Até a revisão dos testes legados estar concluída, não execute a suíte PostgreSQL geral contra este database. Veja `docs/evidence/postgres-integration-test-isolation.md`.
+
 ### Catálogo demonstrativo
 
 Após aplicar as migrations, carregue o seed separado:

@@ -39,6 +39,10 @@ backend/cmd/migrate/      comando independente de migrations
 backend/internal/http/    roteamento, handlers e middleware
 backend/internal/infrastructure/postgres/
                           configuração, pool e readiness
+backend/internal/testsupport/postgres/
+                          guard e helpers PostgreSQL para testes
+backend/cmd/integration-db/
+                          status e migrations do banco descartável de integração
 backend/migrations/       migrations estruturais up/down
 backend/seeds/            dados iniciais separados do schema
 backend/tests/            testes SQL de integridade
@@ -137,6 +141,16 @@ As migrations:
 - São aplicadas pelo comando `go run ./cmd/migrate`.
 - Suportam `up`, `down [steps]` e `version`.
 - Mantêm seeds fora das migrations estruturais.
+
+## Infraestrutura PostgreSQL de integração
+
+Os três contextos de dados são independentes: desenvolvimento usa `DATABASE_URL`; homologação mantém o banco persistente `loja_3d_test` e seus seeds; testes de integração novos usam exclusivamente `TEST_DATABASE_URL` apontando a `127.0.0.1:5433/loja_3d_integration_test` com o usuário dedicado `formo3d_integration_test` em PostgreSQL 17.x. `loja_3d_test` não é descartável.
+
+`internal/testsupport/postgres` faz parsing estrito do URL com pgx, rejeita host/porta/banco/usuário diferentes e overrides ou fallbacks de destino, e nunca consulta `DATABASE_URL`. Antes dos fixtures, `Open`/`OpenURL` valida por consulta a identidade efetiva (`current_database()`, `current_user`, `server_version_num`). O pacote fornece UUIDs de fixture, transações com rollback registrado e cleanup explicitamente limitado a um ID. Não aplica migrations automaticamente.
+
+O comando separado `go run ./cmd/integration-db status|migrate` usa apenas `TEST_DATABASE_URL`. `status` valida a identidade e lê o estado de migrations. `migrate` só aceita uma base realmente sem estado de migration e sem relações de usuário em schemas não sistêmicos, aplica os SQL oficiais e confirma versão limpa; não cria databases, executa `down` nem utiliza banco de desenvolvimento/homologação. A preparação do servidor, role e database permanece manual e externa ao comando.
+
+`go test -p 1 ./...` é apenas uma redução de concorrência entre pacotes: não fornece isolamento de dados. Os testes PostgreSQL legados não foram migrados nesta etapa e não devem receber `TEST_DATABASE_URL` até cada fixture, escrita, ID fixo e limpeza ser revisada. A estratégia futura é adaptação gradual para schema/fixtures próprios ou transações com rollback; cenários concorrentes devem usar conexões distintas e cleanup por chaves próprias. Procedimento e limites em `docs/evidence/postgres-integration-test-isolation.md`.
 
 Ordem atual:
 
